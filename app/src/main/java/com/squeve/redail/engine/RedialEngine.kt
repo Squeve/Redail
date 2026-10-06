@@ -12,6 +12,7 @@ class RedialEngine(
     private val dialer: Dialer,
     private val phoneBusy: StateFlow<Boolean>,
     private val callLog: CallLogReader,
+    private val audio: AudioControl = NoAudio,
     private val onResult: suspend (AttemptResult) -> Unit = {},
     private val startTimeoutMs: Long = 15_000,   // max wait for a placed call to actually begin
     private val settleTimeoutMs: Long = 8_000,   // max wait for the line to free up after hang up
@@ -40,6 +41,7 @@ class RedialEngine(
         runJob = null
         pausedFlow.value = false
         dialer.hangUp()
+        audio.restore()
         _state.value = EngineState.Idle
     }
 
@@ -84,7 +86,7 @@ class RedialEngine(
         val startedAt = System.currentTimeMillis()
         _state.value = EngineState.Dialing(p)
 
-        if (!dialer.place(job.number)) return failed(job, p)
+        if (!dialer.place(job.number, job.speaker)) return failed(job, p)
 
         // Wait for the call to really begin (line goes busy).
         val started = withTimeoutOrNull(startTimeoutMs) { phoneBusy.first { it } } != null
@@ -98,15 +100,30 @@ class RedialEngine(
 
         // Let the call run until it ends, or hang up when the call duration is reached.
         val limit = job.hangUpAfterMs
-        val endedByItself: Boolean = if (limit == null) {
-            phoneBusy.first { !it }
-            true
-        } else {
-            withTimeoutOrNull(limit) { phoneBusy.first { !it } } != null
+        val endedByItself: Boolean = coroutineScope {
+            // Re-apply speaker/mute while the call runs; the phone resets audio when the call connects.
+            val keeper = if (job.speaker || job.muteMic) {
+                launch {
+                    while (true) {
+                        audio.apply(job.speaker, job.muteMic)
+                        delay(1_500)
+                    }
+                }
+            } else null
+
+            val ended = if (limit == null) {
+                phoneBusy.first { !it }
+                true
+            } else {
+                withTimeoutOrNull(limit) { phoneBusy.first { !it } } != null
+            }
+            keeper?.cancel()
+            ended
         }
         if (!endedByItself) dialer.hangUp()
 
         awaitLineFree()
+        audio.restore()
         delay(postCallPauseMs)
 
         var duration = 0L

@@ -117,6 +117,8 @@ private fun RedialScreen() {
     var limitOn by remember { mutableStateOf(prefs.getBoolean("limitOn", true)) }
     var durSec by remember { mutableStateOf(prefs.getInt("dur", 30)) }
     var skipAnswered by remember { mutableStateOf(prefs.getBoolean("skip", false)) }
+    var speakerOn by remember { mutableStateOf(prefs.getBoolean("speaker", false)) }
+    var muteOn by remember { mutableStateOf(prefs.getBoolean("mute", false)) }
     var simIndex by remember { mutableStateOf(prefs.getInt("sim", 0)) }
     var permTick by remember { mutableStateOf(0) }
     val resumeTick by ResumeSignal.tick.collectAsState()
@@ -171,7 +173,8 @@ private fun RedialScreen() {
         prefs.edit()
             .putString("numbers", numbers.joinToString("\n"))
             .putInt("calls", calls).putInt("gap", gapSec).putInt("dur", durSec)
-            .putBoolean("limitOn", limitOn).putBoolean("skip", skipAnswered).putInt("sim", simIndex)
+            .putBoolean("limitOn", limitOn).putBoolean("skip", skipAnswered)
+            .putBoolean("speaker", speakerOn).putBoolean("mute", muteOn).putInt("sim", simIndex)
             .apply()
         RedialService.pendingQueue = numbers.map {
             RedialJob(
@@ -180,6 +183,8 @@ private fun RedialScreen() {
                 gapMs = gapSec * 1000L,
                 hangUpAfterMs = if (limitOn) durSec * 1000L else null,
                 stopOnConnected = skipAnswered,
+                speaker = speakerOn,
+                muteMic = muteOn,
             )
         }
         RedialService.pendingSim = if (sims.size > 1) sims.getOrNull(simIndex)?.handle else null
@@ -361,6 +366,22 @@ private fun RedialScreen() {
                     valueText = "$gapSec sec",
                     value = gapSec, range = 1..300, enabled = !running,
                 ) { gapSec = it }
+                Divider()
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Start call on speaker", fontSize = 18.sp, modifier = Modifier.weight(1f))
+                    Switch(checked = speakerOn, onCheckedChange = { speakerOn = it }, enabled = !running)
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Mute microphone", fontSize = 18.sp)
+                        Text(
+                            "Best effort: some phones ignore mute on normal calls.",
+                            fontSize = 12.sp, color = Color(0xFFB0B0B0),
+                        )
+                    }
+                    Switch(checked = muteOn, onCheckedChange = { muteOn = it }, enabled = !running)
+                }
                 Divider()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {

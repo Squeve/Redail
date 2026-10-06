@@ -7,6 +7,8 @@ data class RedialJob(
     val gapMs: Long = 5_000,                  // interval between calls
     val hangUpAfterMs: Long? = 30_000,        // call duration; null = let the call run
     val stopOnConnected: Boolean = false,     // skip to next number once answered
+    val speaker: Boolean = false,             // start the call on speakerphone
+    val muteMic: Boolean = false,             // keep the microphone muted during the call
 )
 
 enum class AttemptOutcome { COMPLETED, CONNECTED, NO_ANSWER, FAILED_TO_START }

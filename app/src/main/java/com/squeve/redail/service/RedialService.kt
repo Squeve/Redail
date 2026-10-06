@@ -55,6 +55,7 @@ class RedialService : Service() {
                         dialer = TelecomDialer(this, pendingSim),
                         phoneBusy = PhoneStateMonitor.offhook,
                         callLog = CallLogDurationReader(this),
+                        audio = AndroidAudioControl(this),
                     )
                     engine = e
                     acquireWakeLock()

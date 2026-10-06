@@ -3,6 +3,7 @@ package com.squeve.redail.engine
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
@@ -33,8 +34,9 @@ class TelecomDialer(
     private val telecom get() = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
 
     @SuppressLint("MissingPermission")
-    override fun place(number: String): Boolean = runCatching {
+    override fun place(number: String, speaker: Boolean): Boolean = runCatching {
         val extras = Bundle()
+        if (speaker) extras.putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, true)
         if (account != null) extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
         telecom.placeCall(Uri.fromParts("tel", number, null), extras)
         true
@@ -43,6 +45,34 @@ class TelecomDialer(
     @Suppress("DEPRECATION")
     @SuppressLint("MissingPermission")
     override fun hangUp(): Boolean = runCatching { telecom.endCall() }.getOrDefault(false)
+}
+
+/**
+ * Speaker comes from the Telecom start flag; this is the extra nudge plus microphone mute.
+ * Mute is best effort: Android only guarantees it for the default dialer, so we re-apply while the call runs.
+ */
+class AndroidAudioControl(ctx: Context) : AudioControl {
+    private val am = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var applied = false
+
+    @Suppress("DEPRECATION")
+    override fun apply(speaker: Boolean, mute: Boolean) {
+        runCatching {
+            if (speaker && !am.isSpeakerphoneOn) am.isSpeakerphoneOn = true
+            if (mute && !am.isMicrophoneMute) am.isMicrophoneMute = true
+            applied = true
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun restore() {
+        if (!applied) return
+        runCatching {
+            am.isMicrophoneMute = false
+            am.isSpeakerphoneOn = false
+        }
+        applied = false
+    }
 }
 
 /**
