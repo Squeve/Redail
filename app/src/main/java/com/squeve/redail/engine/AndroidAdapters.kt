@@ -4,21 +4,39 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.CallLog
+import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
-import com.squeve.redail.model.CallEvent
-import kotlinx.coroutines.channels.awaitClose
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-class TelecomDialer(private val ctx: Context) : Dialer {
+data class SimOption(val label: String, val handle: PhoneAccountHandle)
+
+@SuppressLint("MissingPermission")
+fun listSims(ctx: Context): List<SimOption> = runCatching {
+    val tm = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+    tm.callCapablePhoneAccounts.mapIndexed { i, h ->
+        val name = tm.getPhoneAccount(h)?.label?.toString().orEmpty()
+        SimOption(if (name.isBlank()) "SIM ${i + 1}" else "SIM ${i + 1} · $name", h)
+    }
+}.getOrDefault(emptyList())
+
+class TelecomDialer(
+    private val ctx: Context,
+    private val account: PhoneAccountHandle?,
+) : Dialer {
     private val telecom get() = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
 
     @SuppressLint("MissingPermission")
     override fun place(number: String): Boolean = runCatching {
-        telecom.placeCall(Uri.fromParts("tel", number, null), null)  // TODO: pass PhoneAccountHandle for dual SIM
+        val extras = Bundle()
+        if (account != null) extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+        telecom.placeCall(Uri.fromParts("tel", number, null), extras)
         true
     }.getOrDefault(false)
 
@@ -27,41 +45,52 @@ class TelecomDialer(private val ctx: Context) : Dialer {
     override fun hangUp(): Boolean = runCatching { telecom.endCall() }.getOrDefault(false)
 }
 
-class TelephonyCallState(private val ctx: Context) : CallStateSource {
-    private val tm get() = ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+/**
+ * Single app-wide listener. offhook = true while any call is active (dialing, ringing out or connected).
+ * A StateFlow, so transitions can never be "missed" the way one-shot events can.
+ */
+object PhoneStateMonitor {
+    private val _offhook = MutableStateFlow(false)
+    val offhook: StateFlow<Boolean> = _offhook.asStateFlow()
+
+    private var registered = false
+    private var keepAlive: Any? = null
 
     @SuppressLint("MissingPermission")
-    override val events: Flow<CallEvent> = callbackFlow {
-        fun map(state: Int): CallEvent? = when (state) {
-            TelephonyManager.CALL_STATE_OFFHOOK -> CallEvent.OFFHOOK
-            TelephonyManager.CALL_STATE_IDLE -> CallEvent.IDLE
-            else -> null
-        }
-        val executor = ctx.mainExecutor
-        if (Build.VERSION.SDK_INT >= 31) {
-            val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
-                override fun onCallStateChanged(state: Int) { map(state)?.let { trySend(it) } }
+    @Synchronized
+    fun init(context: Context) {
+        if (registered) return
+        val app = context.applicationContext
+        val tm = app.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
+                    override fun onCallStateChanged(state: Int) {
+                        _offhook.value = state == TelephonyManager.CALL_STATE_OFFHOOK
+                    }
+                }
+                tm.registerTelephonyCallback(app.mainExecutor, cb)
+                keepAlive = cb
+            } else {
+                @Suppress("DEPRECATION")
+                val l = object : PhoneStateListener() {
+                    @Deprecated("Deprecated in Java")
+                    override fun onCallStateChanged(state: Int, phoneNumber: String?) {
+                        _offhook.value = state == TelephonyManager.CALL_STATE_OFFHOOK
+                    }
+                }
+                @Suppress("DEPRECATION")
+                tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
+                keepAlive = l
             }
-            tm.registerTelephonyCallback(executor, cb)
-            awaitClose { tm.unregisterTelephonyCallback(cb) }
-        } else {
-            @Suppress("DEPRECATION")
-            val l = object : PhoneStateListener() {
-                @Deprecated("Deprecated in Java")
-                override fun onCallStateChanged(state: Int, phoneNumber: String?) { map(state)?.let { trySend(it) } }
-            }
-            @Suppress("DEPRECATION")
-            tm.listen(l, PhoneStateListener.LISTEN_CALL_STATE)
-            @Suppress("DEPRECATION")
-            awaitClose { tm.listen(l, PhoneStateListener.LISTEN_NONE) }
+            registered = true
         }
-    }.shareIn(kotlinx.coroutines.GlobalScope, SharingStarted.Eagerly)
+    }
 }
 
 class CallLogDurationReader(private val ctx: Context) : CallLogReader {
     @SuppressLint("MissingPermission")
     override fun lastOutgoingDurationSec(number: String, sinceMs: Long): Long {
-        // Small delay-tolerant read: the log row can land a moment after IDLE.
         repeat(5) {
             ctx.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,

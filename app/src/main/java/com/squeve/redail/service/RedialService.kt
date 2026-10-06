@@ -4,6 +4,8 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.os.IBinder
+import android.os.PowerManager
+import android.telecom.PhoneAccountHandle
 import androidx.core.app.NotificationCompat
 import com.squeve.redail.engine.*
 import com.squeve.redail.model.*
@@ -20,12 +22,19 @@ class RedialService : Service() {
         private const val CHANNEL = "redail"
         private const val NOTIF_ID = 1
 
-        /** Temporary hand-off until Room is wired in. */
+        /** Hand-off from the UI. */
         @Volatile var pendingQueue: List<RedialJob> = emptyList()
+        @Volatile var pendingSim: PhoneAccountHandle? = null
         @Volatile var engine: RedialEngine? = null
+
+        /** Live state for the UI. */
+        val status = MutableStateFlow<EngineState>(EngineState.Idle)
+        val paused = MutableStateFlow(false)
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var overlay: OverlayController? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -34,37 +43,62 @@ class RedialService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        val action = intent?.action
+        when (action) {
             ACTION_START -> {
-                startForeground(NOTIF_ID, notification("Starting…"))
-                val e = RedialEngine(
-                    dialer = TelecomDialer(this),
-                    callState = TelephonyCallState(this),
-                    callLog = CallLogDurationReader(this),
-                    onResult = { /* TODO: persist to Room */ },
-                ).also { engine = it }
-                e.start(scope, pendingQueue)
-                scope.launch {
-                    e.state.collect { s ->
-                        getSystemService(NotificationManager::class.java).notify(NOTIF_ID, notification(describe(s)))
-                        if (s is EngineState.Finished) stopSelf()
+                startForeground(NOTIF_ID, notification(describe(status.value)))
+
+                // Only ever one engine running. A second Start tap must not spawn a second dialer.
+                if (engine?.isRunning != true) {
+                    PhoneStateMonitor.init(applicationContext)
+                    val e = RedialEngine(
+                        dialer = TelecomDialer(this, pendingSim),
+                        phoneBusy = PhoneStateMonitor.offhook,
+                        callLog = CallLogDurationReader(this),
+                    )
+                    engine = e
+                    acquireWakeLock()
+                    if (overlay == null) overlay = OverlayController(this)
+                    overlay?.show()
+                    e.start(scope, pendingQueue)
+
+                    scope.launch {
+                        e.state.collect { s ->
+                            status.value = s
+                            if (s is EngineState.Finished) {
+                                releaseWakeLock()
+                                delay(4000)   // leave "Done" visible on the overlay for a moment
+                                if (engine?.isRunning != true) stopSelf()
+                            } else if (s !is EngineState.Idle) {
+                                getSystemService(NotificationManager::class.java)
+                                    .notify(NOTIF_ID, notification(describe(s)))
+                            }
+                        }
                     }
+                    scope.launch { e.isPaused.collect { paused.value = it } }
                 }
             }
             ACTION_PAUSE -> engine?.pause()
             ACTION_RESUME -> engine?.resume()
-            ACTION_STOP -> { engine?.stop(); stopSelf() }
+            ACTION_STOP -> {
+                engine?.stop()
+                status.value = EngineState.Idle
+                paused.value = false
+                overlay?.hide()
+                stopSelf()
+            }
         }
+        if (action != ACTION_START && engine?.isRunning != true) stopSelf()
         return START_NOT_STICKY
     }
 
-    private fun describe(s: EngineState) = when (s) {
-        is EngineState.Idle -> "Idle"
-        is EngineState.Dialing -> "Dialing ${s.number} (${s.attempt}/${s.total})"
-        is EngineState.InCall -> "Calling ${s.number} (${s.attempt}/${s.total})"
-        is EngineState.Cooldown -> "Next attempt for ${s.number} shortly"
+    private fun describe(s: EngineState): String = when (s) {
+        is EngineState.Idle -> "Starting…"
+        is EngineState.Dialing -> "Dialing ${s.p.number} · call ${s.p.attempt}/${s.p.total} · number ${s.p.jobIndex + 1}/${s.p.jobCount}"
+        is EngineState.InCall -> "Calling ${s.p.number} · call ${s.p.attempt}/${s.p.total} · number ${s.p.jobIndex + 1}/${s.p.jobCount}"
+        is EngineState.Cooldown -> "Next: ${s.next.number} · call ${s.next.attempt}/${s.next.total}"
         is EngineState.Paused -> "Paused"
-        is EngineState.Finished -> "Done: ${s.results.size} attempts"
+        is EngineState.Finished -> "Done · ${s.results.size} calls"
     }
 
     private fun action(label: String, action: String) = NotificationCompat.Action(
@@ -85,6 +119,27 @@ class RedialService : Service() {
         .addAction(action("Stop", ACTION_STOP))
         .build()
 
-    override fun onDestroy() { scope.cancel(); super.onDestroy() }
+    private fun acquireWakeLock() {
+        releaseWakeLock()
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "squeve:redail").apply {
+            acquire(6 * 60 * 60 * 1000L)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { if (it.isHeld) it.release() }
+        wakeLock = null
+    }
+
+    override fun onDestroy() {
+        if (engine?.isRunning == true) engine?.stop()
+        overlay?.hide()
+        overlay = null
+        releaseWakeLock()
+        scope.cancel()
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 }

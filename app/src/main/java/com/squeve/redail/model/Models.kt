@@ -1,15 +1,15 @@
 package com.squeve.redail.model
 
-/** One number in the queue plus its own retry rules. */
+/** One number in the queue plus its own rules. */
 data class RedialJob(
     val number: String,
-    val attempts: Int = 3,
-    val gapBetweenAttemptsMs: Long = 30_000,   // wait after each attempt
-    val ringTimeoutMs: Long = 25_000,          // hang up if still ringing after this
-    val stopOnConnected: Boolean = true,       // skip remaining attempts once answered
+    val attempts: Int = 5,                    // number of calls to this number
+    val gapMs: Long = 5_000,                  // interval between calls
+    val hangUpAfterMs: Long? = 30_000,        // call duration; null = let the call run
+    val stopOnConnected: Boolean = false,     // skip to next number once answered
 )
 
-enum class AttemptOutcome { CONNECTED, NO_ANSWER, FAILED_TO_START, CANCELLED }
+enum class AttemptOutcome { COMPLETED, CONNECTED, NO_ANSWER, FAILED_TO_START }
 
 data class AttemptResult(
     val number: String,
@@ -19,14 +19,28 @@ data class AttemptResult(
     val timestamp: Long = System.currentTimeMillis(),
 )
 
-/** Phone-level events the engine cares about. */
-enum class CallEvent { OFFHOOK, IDLE }
+/** Where the run currently is. jobIndex is 0-based. */
+data class Progress(
+    val jobIndex: Int,
+    val jobCount: Int,
+    val number: String,
+    val attempt: Int,
+    val total: Int,
+)
 
 sealed interface EngineState {
     data object Idle : EngineState
-    data class Dialing(val number: String, val attempt: Int, val total: Int) : EngineState
-    data class InCall(val number: String, val attempt: Int, val total: Int) : EngineState
-    data class Cooldown(val number: String, val nextAttempt: Int, val untilMs: Long) : EngineState
-    data class Paused(val resumeTo: EngineState) : EngineState
+    data class Dialing(val p: Progress) : EngineState
+    data class InCall(val p: Progress) : EngineState
+    data class Cooldown(val next: Progress, val untilMs: Long) : EngineState
+    data class Paused(val last: EngineState) : EngineState
     data class Finished(val results: List<AttemptResult>) : EngineState
+}
+
+fun EngineState.progress(): Progress? = when (this) {
+    is EngineState.Dialing -> p
+    is EngineState.InCall -> p
+    is EngineState.Cooldown -> next
+    is EngineState.Paused -> last.progress()
+    else -> null
 }

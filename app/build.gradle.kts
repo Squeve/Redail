@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// CI sets GITHUB_RUN_NUMBER; every pushed build gets a higher versionCode than the last.
+val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+
 android {
     namespace = "com.squeve.redail"
     compileSdk = 35
@@ -11,8 +14,18 @@ android {
         applicationId = "com.squeve.redail"
         minSdk = 28            // endCall() needs API 28+
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = if (runNumber != null) runNumber + 100 else 4
+        versionName = "0.4"
+    }
+
+    // Same debug key on every build, so new APKs install over old ones.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("squeve-debug.store")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
