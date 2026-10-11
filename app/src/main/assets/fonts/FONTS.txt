@@ -1,0 +1,4 @@
+Bundled fonts (both under the SIL Open Font License 1.1, free to redistribute):
+  sans_*.ttf  Poppins (Indian Type Foundry)         headings, buttons, body text
+  mono_*.ttf  Liberation Mono (Red Hat / Google)    numbers and data
+To restyle the app, replace these files with fonts of the same weights and keep the file names.

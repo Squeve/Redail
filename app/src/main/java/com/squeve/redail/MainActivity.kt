@@ -77,12 +77,14 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -112,6 +114,9 @@ private val Mint = Color(0xFF00E676)
 private val Dim = Color(0xFF8A9BB8)
 private val Hair = Color(0xFF22304A)
 
+/** The whole UI is drawn at this fraction of normal size (dp and sp together). */
+private const val UI_SCALE = 0.88f
+
 private val Mono: FontFamily get() = Fonts.mono
 private val Display: FontFamily get() = Fonts.display
 
@@ -120,6 +125,28 @@ private val DangerBrush = Brush.horizontalGradient(listOf(Magenta, Color(0xFFFF5
 private val DisabledBrush = Brush.horizontalGradient(listOf(Hair, Hair))
 private val BgBrush = Brush.verticalGradient(listOf(Ink, InkSoft, Ink))
 private val RingBrush = Brush.sweepGradient(listOf(Cyan, Violet, Magenta, Cyan))
+
+/** Material text styles all use the bundled family, so nothing falls back to the phone's system font. */
+private fun typographyWith(f: FontFamily): Typography {
+    val t = Typography()
+    return t.copy(
+        displayLarge = t.displayLarge.copy(fontFamily = f),
+        displayMedium = t.displayMedium.copy(fontFamily = f),
+        displaySmall = t.displaySmall.copy(fontFamily = f),
+        headlineLarge = t.headlineLarge.copy(fontFamily = f),
+        headlineMedium = t.headlineMedium.copy(fontFamily = f),
+        headlineSmall = t.headlineSmall.copy(fontFamily = f),
+        titleLarge = t.titleLarge.copy(fontFamily = f),
+        titleMedium = t.titleMedium.copy(fontFamily = f),
+        titleSmall = t.titleSmall.copy(fontFamily = f),
+        bodyLarge = t.bodyLarge.copy(fontFamily = f),
+        bodyMedium = t.bodyMedium.copy(fontFamily = f),
+        bodySmall = t.bodySmall.copy(fontFamily = f),
+        labelLarge = t.labelLarge.copy(fontFamily = f),
+        labelMedium = t.labelMedium.copy(fontFamily = f),
+        labelSmall = t.labelSmall.copy(fontFamily = f),
+    )
+}
 
 private val Scheme = darkColorScheme(
     primary = Cyan,
@@ -298,13 +325,19 @@ class MainActivity : ComponentActivity() {
             ImeSignal.open.value = full > 0 && (full - r.bottom) > full * 0.15f
         }
         setContent {
-            MaterialTheme(colorScheme = Scheme) {
-                Box(Modifier.fillMaxSize().techBackdrop()) {
-                    Surface(
-                        Modifier.fillMaxSize(),
-                        color = Color.Transparent,
-                        contentColor = Color(0xFFE6EEFF),
-                    ) { RedialScreen() }
+            // Uniformly smaller UI, and ignore oversized system font scaling so layouts stay tidy.
+            val base = LocalDensity.current
+            val scaled = remember(base) { Density(base.density * UI_SCALE, base.fontScale.coerceAtMost(1f)) }
+            val type = remember { typographyWith(Fonts.body) }
+            CompositionLocalProvider(LocalDensity provides scaled) {
+                MaterialTheme(colorScheme = Scheme, typography = type) {
+                    Box(Modifier.fillMaxSize().techBackdrop()) {
+                        Surface(
+                            Modifier.fillMaxSize(),
+                            color = Color.Transparent,
+                            contentColor = Color(0xFFE6EEFF),
+                        ) { RedialScreen() }
+                    }
                 }
             }
         }
@@ -440,16 +473,14 @@ private fun Header(running: Boolean) {
         Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Image(painter = painterResource(R.drawable.logo), contentDescription = null, modifier = Modifier.size(46.dp))
-        Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                "SQUEVE", fontFamily = Display, fontWeight = FontWeight.Bold,
-                fontSize = 26.sp, letterSpacing = 6.sp, color = Color.White,
+                "SQUEVE REDAIL", fontFamily = Display, fontWeight = FontWeight.Bold,
+                fontSize = 20.sp, letterSpacing = 3.sp, color = Color.White, maxLines = 1,
             )
             Text(
-                "REDAIL · AUTO-DIAL ENGINE", fontFamily = Mono,
-                fontSize = 10.sp, letterSpacing = 3.sp, color = Cyan,
+                "AUTO-DIAL ENGINE", fontFamily = Display, fontWeight = FontWeight.Medium,
+                fontSize = 10.sp, letterSpacing = 3.sp, color = Cyan, maxLines = 1,
             )
         }
         Row(
@@ -532,7 +563,7 @@ private fun ControlDock(
     val paused by RedialService.paused.collectAsState()
     Column(Modifier.fillMaxWidth().background(Dock)) {
         Hairline()
-        Box(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             if (!running) {
                 NeonButton(
                     "START REDIAL", strong = true,
@@ -543,7 +574,7 @@ private fun ControlDock(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     GhostButton(
                         if (paused) "RESUME" else "PAUSE",
-                        modifier = Modifier.weight(1f).height(52.dp),
+                        modifier = Modifier.weight(1f).height(48.dp),
                         icon = { if (paused) Glyph(Icons.Filled.PlayArrow, it, 20.dp) else PauseGlyph(it) },
                     ) { onPauseResume(paused) }
                     NeonButton(
@@ -686,7 +717,7 @@ private fun HeroPanel(jobCount: Int, callsEach: Int) {
 
     GlassCard {
         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-            Box(Modifier.size(190.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(172.dp), contentAlignment = Alignment.Center) {
                 Canvas(Modifier.fillMaxSize()) {
                     val sweep = animated.value
                     val strokeW = 12.dp.toPx()
@@ -769,7 +800,7 @@ private fun HeroPanel(jobCount: Int, callsEach: Int) {
 private fun PercentText(animated: State<Float>) {
     Text(
         "${(animated.value * 100).roundToInt()}%", fontFamily = Display,
-        fontWeight = FontWeight.Bold, fontSize = 44.sp, color = Color.White,
+        fontWeight = FontWeight.Bold, fontSize = 38.sp, color = Color.White,
     )
 }
 
@@ -1248,7 +1279,7 @@ private fun NeonButton(
         modifier
             .pressable(enabled, strong, onClick)
             .fillMaxWidth()
-            .height(52.dp)
+            .height(48.dp)
             .drawBehind {
                 if (enabled) {
                     // Cheap glow: a few translucent copies of the button, growing outward.
@@ -1286,7 +1317,7 @@ private fun NeonButton(
 private fun GhostButton(
     text: String,
     enabled: Boolean = true,
-    modifier: Modifier = Modifier.fillMaxWidth().height(52.dp),
+    modifier: Modifier = Modifier.fillMaxWidth().height(48.dp),
     icon: (@Composable (Color) -> Unit)? = null,
     onClick: () -> Unit,
 ) {
@@ -1330,7 +1361,7 @@ private fun SegChip(label: String, selected: Boolean, enabled: Boolean, modifier
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            label, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 0.5.sp,
+            label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 0.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             color = if (selected) Cyan else Dim,
             maxLines = 1, softWrap = false,
@@ -1349,7 +1380,7 @@ private fun GlassCard(content: @Composable ColumnScope.() -> Unit) {
         ),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Column(Modifier.padding(18.dp), content = content)
+        Column(Modifier.padding(16.dp), content = content)
     }
 }
 

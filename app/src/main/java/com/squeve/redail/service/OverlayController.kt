@@ -80,8 +80,8 @@ class OverlayController(private val ctx: Context) {
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(16)
-            y = dp(120)
+            x = if (collapsed) ctx.resources.displayMetrics.widthPixels - dp(84) else dp(16)
+            y = dp(160)
         }
         attachDrag(frame, params)
 
@@ -347,7 +347,7 @@ class OverlayController(private val ctx: Context) {
 
     private fun snapToEdge(view: View, params: WindowManager.LayoutParams) {
         val dm = ctx.resources.displayMetrics
-        val w = if (bubble.width > 0) bubble.width else dp(68)
+        val w = if (bubble.width > 0) bubble.width else dp(76)
         val target = if (params.x + w / 2 < dm.widthPixels / 2) dp(6) else dm.widthPixels - w - dp(6)
         params.y = params.y.coerceIn(0, maxOf(0, dm.heightPixels - w - dp(24)))
         ValueAnimator.ofInt(params.x, target).apply {
@@ -361,43 +361,56 @@ class OverlayController(private val ctx: Context) {
     }
 }
 
-/** Small ring + readout. Draws only when its values change. */
+/**
+ * Round readout: opaque dark disc with a white hairline, a thick progress ring and a pulsing glow,
+ * so it stands out on dark and light screens alike. Redraws on value changes and while it pulses.
+ */
 private class BubbleView(ctx: Context) : View(ctx) {
     private var fraction = 0f
     private var label = ""
     private var sub = ""
     private var ringColor = Color.parseColor("#00E5FF")
+    private var pulse = 1f
+    private var pulser: ValueAnimator? = null
 
     private val d = ctx.resources.displayMetrics.density
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#F00A1020") }
-    private val edge = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val core = 30 * d          // radius of the dark disc
+    private val glowPad = 8 * d        // room around the disc for the glow
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF0A1020") }
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.5f * d
-        color = Color.parseColor("#3300E5FF")
+        strokeWidth = 1.6f * d
+        color = Color.parseColor("#E6FFFFFF")
+    }
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 3 * d
     }
     private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 5 * d
-        color = Color.parseColor("#22304A")
+        strokeWidth = 5.5f * d
+        color = Color.parseColor("#2E4066")
     }
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 5 * d
+        strokeWidth = 5.5f * d
         strokeCap = Paint.Cap.ROUND
     }
     private val big = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
-        textSize = 15 * d
+        textSize = 14 * d
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
     }
     private val small = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#8A9BB8")
+        color = Color.parseColor("#B7C4DD")
         textAlign = Paint.Align.CENTER
-        textSize = 8 * d
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.NORMAL)
+        textSize = 7.5f * d
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
     }
     private val box = RectF()
+    private val glowAlphas = intArrayOf(95, 55, 28)
 
     fun update(f: Float, l: String, s: String, c: Int) {
         if (f != fraction || l != label || s != sub || c != ringColor) {
@@ -409,24 +422,64 @@ private class BubbleView(ctx: Context) : View(ctx) {
         }
     }
 
+    // Pulse only while the bubble is actually on screen.
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        if (isVisible) startPulse() else stopPulse()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopPulse()
+        super.onDetachedFromWindow()
+    }
+
+    private fun startPulse() {
+        if (pulser != null) return
+        pulser = ValueAnimator.ofFloat(0.45f, 1f).apply {
+            duration = 1300
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener {
+                pulse = it.animatedValue as Float
+                invalidate()
+            }
+            start()
+        }
+    }
+
+    private fun stopPulse() {
+        pulser?.cancel()
+        pulser = null
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val size = (68 * d).toInt()
+        val size = ((core + glowPad) * 2).toInt()
         setMeasuredDimension(size, size)
     }
 
     override fun onDraw(canvas: Canvas) {
         val cx = width / 2f
         val cy = height / 2f
-        canvas.drawCircle(cx, cy, width / 2f - 1f, fill)
-        canvas.drawCircle(cx, cy, width / 2f - 1f, edge)
-        val pad = 7 * d
-        box.set(pad, pad, width - pad, height - pad)
+
+        // glow halo in the ring colour
+        for (i in glowAlphas.indices) {
+            glow.color = ringColor
+            glow.alpha = (glowAlphas[i] * pulse).toInt()
+            canvas.drawCircle(cx, cy, core + (1.5f + i * 2.5f) * d, glow)
+        }
+
+        canvas.drawCircle(cx, cy, core, fill)
+        canvas.drawCircle(cx, cy, core, rim)
+
+        val r = core - 8 * d
+        box.set(cx - r, cy - r, cx + r, cy + r)
         canvas.drawArc(box, 0f, 360f, false, track)
         if (fraction > 0.001f) {
             arc.color = ringColor
             canvas.drawArc(box, -90f, 360f * fraction, false, arc)
         }
+
         canvas.drawText(label, cx, cy + 1 * d, big)
-        canvas.drawText(sub, cx, cy + 13 * d, small)
+        canvas.drawText(sub, cx, cy + 12 * d, small)
     }
 }

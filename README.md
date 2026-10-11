@@ -5,7 +5,7 @@ Android auto-redial app. Add numbers, choose how calls are ordered, set calls pe
 - **Order:** one by one, round robin, or random
 - **SIM:** phone default, SIM 1 or SIM 2
 - **Floating control:** expanded card (progress, hang-up countdown with KEEP CALL, pause, stop) or a small snapping bubble
-- **Fonts:** optional custom fonts, see `app/src/main/assets/fonts/README.txt`
+- **Fonts:** Poppins + Liberation Mono are bundled (see `app/src/main/assets/fonts/FONTS.txt`), so it looks the same on any phone
 - **Audio:** start on speaker, mute microphone (best effort)
 - **Updates:** SYSTEM tab > Get latest version
 
