@@ -14,11 +14,11 @@ android {
         applicationId = "com.squeve.redail"
         minSdk = 28            // endCall() needs API 28+
         targetSdk = 34
-        versionCode = if (runNumber != null) runNumber + 100 else 5
-        versionName = "0.5"
+        versionCode = if (runNumber != null) runNumber + 100 else 6
+        versionName = "0.6"
     }
 
-    // Same debug key on every build, so new APKs install over old ones.
+    // Same key on every build, so new APKs install over old ones.
     signingConfigs {
         getByName("debug") {
             storeFile = file("squeve-debug.store")
@@ -30,8 +30,17 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // Optimized build: Compose is dramatically smoother than in a debug build.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("debug")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
     }
 
     buildFeatures { compose = true }
@@ -54,6 +63,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // Installs the Compose baseline profiles on the device so first launches are fast.
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")

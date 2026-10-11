@@ -14,9 +14,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -24,8 +35,18 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -37,28 +58,43 @@ import com.squeve.redail.model.*
 import com.squeve.redail.service.RedialService
 import com.squeve.redail.update.Updater
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
-private val Bg = Color(0xFF303030)
-private val CardBg = Color(0xFF424242)
-private val Brand = Color(0xFF7E57C2)
-private val Danger = Color(0xFFD32F2F)
-private val Line = Color(0xFF616161)
+// ───────────────────────── Palette ─────────────────────────
+private val Ink = Color(0xFF070B14)
+private val InkSoft = Color(0xFF0D1424)
+private val Panel = Color(0xCC111A2C)
+private val Cyan = Color(0xFF00E5FF)
+private val Violet = Color(0xFF7C4DFF)
+private val Magenta = Color(0xFFFF2E93)
+private val Mint = Color(0xFF00E676)
+private val Dim = Color(0xFF8A9BB8)
+private val Hair = Color(0xFF22304A)
+private val Mono = FontFamily.Monospace
+
+private val NeonBrush = Brush.horizontalGradient(listOf(Cyan, Violet))
+private val DangerBrush = Brush.horizontalGradient(listOf(Magenta, Color(0xFFFF5252)))
+private val DisabledBrush = Brush.horizontalGradient(listOf(Hair, Hair))
+private val BgBrush = Brush.verticalGradient(listOf(Ink, InkSoft, Ink))
+private val RingBrush = Brush.sweepGradient(listOf(Cyan, Violet, Magenta, Cyan))
 
 private val Scheme = darkColorScheme(
-    primary = Color(0xFFB39DDB),
-    onPrimary = Color(0xFF1E1233),
-    background = Bg,
-    onBackground = Color.White,
-    surface = CardBg,
-    onSurface = Color.White,
-    surfaceVariant = CardBg,
-    onSurfaceVariant = Color(0xFFD0D0D0),
-    outline = Color(0xFF9E9E9E),
+    primary = Cyan,
+    onPrimary = Ink,
+    background = Ink,
+    onBackground = Color(0xFFE6EEFF),
+    surface = Panel,
+    onSurface = Color(0xFFE6EEFF),
+    surfaceVariant = Panel,
+    onSurfaceVariant = Dim,
+    outline = Hair,
 )
 
+// ───────────────────────── Helpers ─────────────────────────
 private val REQUIRED = arrayOf(
     Manifest.permission.CALL_PHONE,
     Manifest.permission.READ_PHONE_STATE,
@@ -80,6 +116,8 @@ private fun addNumbers(target: MutableList<String>, raw: String) {
     }
 }
 
+private fun isRunning(s: EngineState) = s !is EngineState.Idle && s !is EngineState.Finished
+
 /** Bumped on every onResume so permission-dependent UI refreshes after returning from system settings. */
 private object ResumeSignal {
     val tick = MutableStateFlow(0)
@@ -93,14 +131,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.statusBarColor = Ink.toArgb()
+        window.navigationBarColor = Ink.toArgb()
         setContent {
             MaterialTheme(colorScheme = Scheme) {
-                Surface(Modifier.fillMaxSize(), color = Bg) { RedialScreen() }
+                Box(Modifier.fillMaxSize().background(BgBrush)) {
+                    Surface(
+                        Modifier.fillMaxSize(),
+                        color = Color.Transparent,
+                        contentColor = Color(0xFFE6EEFF),
+                    ) { RedialScreen() }
+                }
             }
         }
     }
 }
 
+// ───────────────────────── Screen ─────────────────────────
 @Composable
 private fun RedialScreen() {
     val ctx = LocalContext.current
@@ -111,7 +158,6 @@ private fun RedialScreen() {
             prefs.getString("numbers", "")?.split("\n")?.filter { it.isNotBlank() }?.let { addAll(it) }
         }
     }
-    var input by remember { mutableStateOf("") }
     var calls by remember { mutableStateOf(prefs.getInt("calls", 5)) }
     var gapSec by remember { mutableStateOf(prefs.getInt("gap", 5)) }
     var limitOn by remember { mutableStateOf(prefs.getBoolean("limitOn", true)) }
@@ -123,11 +169,10 @@ private fun RedialScreen() {
     var permTick by remember { mutableStateOf(0) }
     val resumeTick by ResumeSignal.tick.collectAsState()
 
-    val status by RedialService.status.collectAsState()
-    val paused by RedialService.paused.collectAsState()
-    val running = status !is EngineState.Idle && status !is EngineState.Finished
-    val finished = status is EngineState.Finished
-    val progress = status.progress()
+    // Only recompose the whole screen when "running" flips, not on every engine state change.
+    val runningFlow = remember { RedialService.status.map { isRunning(it) }.distinctUntilChanged() }
+    val running by runningFlow.collectAsState(initial = isRunning(RedialService.status.value))
+
     val sims = remember(permTick, resumeTick) { listSims(ctx) }
     val granted = remember(permTick, resumeTick) { allGranted(ctx) }
     val overlayOk = remember(permTick, resumeTick) { Settings.canDrawOverlays(ctx) }
@@ -164,7 +209,7 @@ private fun RedialScreen() {
         // One-time prompt for the floating progress controls.
         if (!Settings.canDrawOverlays(ctx) && !prefs.getBoolean("overlayAsked", false)) {
             prefs.edit().putBoolean("overlayAsked", true).apply()
-            Toast.makeText(ctx, "Allow \"Display over other apps\", then press START again", Toast.LENGTH_LONG).show()
+            Toast.makeText(ctx, "Allow 'Display over other apps', then press START again", Toast.LENGTH_LONG).show()
             ctx.startActivity(
                 Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")),
             )
@@ -174,7 +219,8 @@ private fun RedialScreen() {
             .putString("numbers", numbers.joinToString("\n"))
             .putInt("calls", calls).putInt("gap", gapSec).putInt("dur", durSec)
             .putBoolean("limitOn", limitOn).putBoolean("skip", skipAnswered)
-            .putBoolean("speaker", speakerOn).putBoolean("mute", muteOn).putInt("sim", simIndex)
+            .putBoolean("speaker", speakerOn).putBoolean("mute", muteOn)
+            .putInt("sim", simIndex)
             .apply()
         RedialService.pendingQueue = numbers.map {
             RedialJob(
@@ -191,324 +237,676 @@ private fun RedialScreen() {
         ctx.startForegroundService(Intent(ctx, RedialService::class.java).setAction(RedialService.ACTION_START))
     }
 
-    val scope = rememberCoroutineScope()
-    var updateMsg by remember { mutableStateOf("") }
-    var updating by remember { mutableStateOf(false) }
-
-    fun getUpdate() {
-        if (updating) return
-        if (!Updater.canInstall(ctx)) {
-            updateMsg = "Allow installs from Squeve Redail, come back, then tap again."
-            Updater.openInstallSettings(ctx)
-            return
-        }
-        updating = true
-        updateMsg = "Checking for updates…"
-        scope.launch {
-            try {
-                val rel = Updater.latest()
-                val have = Updater.installedBuild(ctx)
-                when {
-                    rel == null -> updateMsg = "No release found yet."
-                    rel.build <= have -> updateMsg = "You're on the latest version (build $have)."
-                    else -> {
-                        updateMsg = "Downloading build ${rel.build}… 0%"
-                        val apk = Updater.download(ctx, rel.apkUrl) { pct ->
-                            updateMsg = "Downloading build ${rel.build}… $pct%"
-                        }
-                        updateMsg = "Opening installer…"
-                        Updater.install(ctx, apk)
-                    }
-                }
-            } catch (e: Exception) {
-                updateMsg = "Update failed: ${e.message ?: e.javaClass.simpleName}"
-            } finally {
-                updating = false
-            }
-        }
-    }
-
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Box(Modifier.fillMaxWidth().background(Brand).padding(horizontal = 16.dp, vertical = 14.dp)) {
-            Text("Squeve Redail", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Color.White)
-        }
+        Header(running)
 
-        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            HeroPanel(jobCount = numbers.size, callsEach = calls)
 
-            if (status !is EngineState.Idle) StatusCard(status, paused)
+            // ───── Targets ─────
+            GlassCard {
+                SectionTitle("TARGETS")
 
-            // ---------- Numbers + start ----------
-            Section {
                 if (sims.size > 1) {
-                    Text("SIM", fontSize = 14.sp, color = Color(0xFFD0D0D0))
-                    Row(Modifier.padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.padding(bottom = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         sims.forEachIndexed { i, s ->
-                            if (i == simIndex) {
-                                Button(onClick = { simIndex = i }, enabled = !running) { Text(s.label) }
-                            } else {
-                                OutlinedButton(onClick = { simIndex = i }, enabled = !running) { Text(s.label) }
-                            }
+                            SimChip(s.label, selected = i == simIndex, enabled = !running) { simIndex = i }
                         }
                     }
                 }
 
+                AddNumberRow(
+                    enabled = !running,
+                    onAdd = { addNumbers(numbers, it) },
+                    onContacts = {
+                        contactPicker.launch(
+                            Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI),
+                        )
+                    },
+                )
+
+                Spacer(Modifier.height(16.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = input,
-                        onValueChange = { input = it },
-                        label = { Text("Number(s), comma separated") },
-                        singleLine = false,
-                        maxLines = 4,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        enabled = !running,
+                    Text(
+                        "QUEUE · ${numbers.size}",
+                        fontFamily = Mono, fontSize = 13.sp, letterSpacing = 3.sp, color = Dim,
                         modifier = Modifier.weight(1f),
                     )
-                    Spacer(Modifier.width(8.dp))
-                    OutlinedButton(
-                        onClick = {
-                            contactPicker.launch(
-                                Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI),
-                            )
-                        },
-                        enabled = !running,
-                    ) { Text("Contacts") }
-                }
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { addNumbers(numbers, input); input = "" },
-                    enabled = !running && input.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Add to queue") }
-
-                Spacer(Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Queue (${numbers.size})", fontSize = 18.sp, modifier = Modifier.weight(1f))
                     if (!running && numbers.isNotEmpty()) {
-                        TextButton(onClick = { numbers.clear() }) { Text("Clear") }
+                        LinkButton("CLEAR") { numbers.clear() }
                     }
                 }
                 if (numbers.isEmpty()) {
-                    Text("No numbers yet.", fontSize = 14.sp, color = Color(0xFFB0B0B0))
+                    Text("No targets yet.", fontFamily = Mono, fontSize = 13.sp, color = Dim,
+                        modifier = Modifier.padding(vertical = 8.dp))
                 }
-                numbers.forEachIndexed { i, n ->
-                    val cur = progress?.jobIndex
-                    val tag = when {
-                        finished -> "✓"
-                        cur == null -> "${i + 1}."
-                        i < cur -> "✓"
-                        i == cur -> "●"
-                        else -> "${i + 1}."
-                    }
-                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(tag, fontSize = 16.sp, modifier = Modifier.width(30.dp))
-                        Text(n, fontSize = 17.sp, modifier = Modifier.weight(1f))
-                        if (running && progress != null && i == progress.jobIndex) {
-                            Text("${progress.attempt}/${progress.total}", fontSize = 15.sp)
-                        } else if (!running) {
-                            TextButton(onClick = { numbers.removeAt(i) }) { Text("✕") }
-                        }
-                    }
-                }
+                QueueList(numbers = numbers, canRemove = !running, onRemove = { numbers.removeAt(it) })
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(16.dp))
                 if (!granted) {
-                    OutlinedButton(
-                        onClick = { permLauncher.launch(permsToRequest()) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Grant permissions") }
-                    Spacer(Modifier.height(8.dp))
+                    GhostButton("GRANT PERMISSIONS") { permLauncher.launch(permsToRequest()) }
+                    Spacer(Modifier.height(10.dp))
                 }
-                if (!running) {
-                    Button(
-                        onClick = { startRun() },
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(4.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = Danger, contentColor = Color.White),
-                    ) { Text("START", fontSize = 18.sp) }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { send(if (paused) RedialService.ACTION_RESUME else RedialService.ACTION_PAUSE) },
-                            modifier = Modifier.weight(1f).height(52.dp),
-                        ) { Text(if (paused) "RESUME" else "PAUSE", fontSize = 16.sp) }
-                        Button(
-                            onClick = { send(RedialService.ACTION_STOP) },
-                            modifier = Modifier.weight(1f).height(52.dp),
-                            shape = RoundedCornerShape(4.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Danger, contentColor = Color.White),
-                        ) { Text("STOP", fontSize = 16.sp) }
-                    }
-                }
+                Controls(
+                    running = running,
+                    onStart = { startRun() },
+                    onPauseResume = { wasPaused ->
+                        send(if (wasPaused) RedialService.ACTION_RESUME else RedialService.ACTION_PAUSE)
+                    },
+                    onStop = { send(RedialService.ACTION_STOP) },
+                )
             }
 
-            // ---------- Settings ----------
-            Section {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Limit call duration", fontSize = 18.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = limitOn, onCheckedChange = { limitOn = it }, enabled = !running)
-                }
+            // ───── Parameters ─────
+            GlassCard {
+                SectionTitle("PARAMETERS")
+                ToggleRow("Limit call duration", null, limitOn, !running) { limitOn = it }
                 if (limitOn) {
-                    StepperRow(
-                        title = "Hang up after",
-                        valueText = "${durSec / 60} min ${durSec % 60} sec",
-                        value = durSec, range = 5..600, enabled = !running,
-                    ) { durSec = it }
+                    StepperRow("Hang up after", durSec, 5..600, !running, { "${it / 60}m ${it % 60}s" }) { durSec = it }
                 }
-                Divider()
-                StepperRow(
-                    title = "Calls per number",
-                    valueText = "$calls",
-                    value = calls, range = 1..500, enabled = !running,
-                ) { calls = it }
-                Divider()
-                StepperRow(
-                    title = "Interval between calls",
-                    valueText = "$gapSec sec",
-                    value = gapSec, range = 1..300, enabled = !running,
-                ) { gapSec = it }
-                Divider()
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Start call on speaker", fontSize = 18.sp, modifier = Modifier.weight(1f))
-                    Switch(checked = speakerOn, onCheckedChange = { speakerOn = it }, enabled = !running)
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Mute microphone", fontSize = 18.sp)
-                        Text(
-                            "Best effort: some phones ignore mute on normal calls.",
-                            fontSize = 12.sp, color = Color(0xFFB0B0B0),
-                        )
-                    }
-                    Switch(checked = muteOn, onCheckedChange = { muteOn = it }, enabled = !running)
-                }
-                Divider()
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Skip to next number if answered", fontSize = 18.sp)
-                        Text(
-                            "Off by default: some phones log ring time as call time, so this can skip too early.",
-                            fontSize = 12.sp, color = Color(0xFFB0B0B0),
-                        )
-                    }
-                    Switch(checked = skipAnswered, onCheckedChange = { skipAnswered = it }, enabled = !running)
-                }
-                Divider()
-                if (!overlayOk) {
-                    TextButton(onClick = {
-                        runCatching {
-                            ctx.startActivity(
-                                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")),
-                            )
-                        }
-                    }) { Text("Enable floating controls (display over other apps)") }
-                }
-                TextButton(onClick = {
+                Hairline()
+                StepperRow("Calls per number", calls, 1..500, !running, { "$it" }) { calls = it }
+                Hairline()
+                StepperRow("Interval between calls", gapSec, 1..300, !running, { "${it}s" }) { gapSec = it }
+                Hairline()
+                ToggleRow("Start call on speaker", null, speakerOn, !running) { speakerOn = it }
+                ToggleRow(
+                    "Mute microphone",
+                    "Best effort: some phones ignore mute on normal calls.",
+                    muteOn, !running,
+                ) { muteOn = it }
+                ToggleRow(
+                    "Skip to next number if answered",
+                    "Off by default: some phones log ring time as call time.",
+                    skipAnswered, !running,
+                ) { skipAnswered = it }
+                Hairline()
+                LinkButton("ALLOW BACKGROUND RUNNING (BATTERY)") {
                     runCatching {
                         ctx.startActivity(
-                            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}")),
+                            Intent(
+                                Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                Uri.parse("package:${ctx.packageName}"),
+                            ),
                         )
                     }
-                }) { Text("Allow background running (battery)") }
-                Divider()
-                Spacer(Modifier.height(8.dp))
-                Text("App updates", fontSize = 18.sp)
+                }
+                if (!overlayOk) {
+                    LinkButton("ENABLE FLOATING CONTROLS (DISPLAY OVER OTHER APPS)") {
+                        runCatching {
+                            ctx.startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${ctx.packageName}"),
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
+            UpdateCard(running)
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ───────────────────────── Header / hero ─────────────────────────
+@Composable
+private fun Header(running: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "SQUEVE", fontFamily = Mono, fontWeight = FontWeight.Black,
+                fontSize = 26.sp, letterSpacing = 6.sp, color = Color.White,
+            )
+            Text(
+                "REDAIL · AUTO-DIAL ENGINE", fontFamily = Mono,
+                fontSize = 11.sp, letterSpacing = 3.sp, color = Cyan,
+            )
+        }
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(50))
+                .border(1.dp, if (running) Mint else Hair, RoundedCornerShape(50))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PulseDot(running)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                if (running) "ACTIVE" else "STANDBY", fontFamily = Mono,
+                fontSize = 11.sp, letterSpacing = 2.sp, color = if (running) Mint else Dim,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PulseDot(active: Boolean) {
+    if (active) {
+        val t = rememberInfiniteTransition(label = "pulse")
+        val a by t.animateFloat(
+            initialValue = 0.3f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(animation = tween(900), repeatMode = RepeatMode.Reverse),
+            label = "alpha",
+        )
+        // Read inside graphicsLayer: animates without recomposing.
+        Box(Modifier.size(10.dp).graphicsLayer { alpha = a }.background(Mint, CircleShape))
+    } else {
+        Box(Modifier.size(10.dp).background(Dim, CircleShape))
+    }
+}
+
+@Composable
+private fun HeroPanel(jobCount: Int, callsEach: Int) {
+    val status by RedialService.status.collectAsState()
+    val paused by RedialService.paused.collectAsState()
+    val running = isRunning(status)
+    val p = status.progress()
+    val finished = status is EngineState.Finished
+
+    val fraction = when {
+        finished -> 1f
+        p != null -> (p.jobIndex * p.total + p.attempt - 1).toFloat() / (p.jobCount * p.total).toFloat()
+        else -> 0f
+    }
+    val animated by animateFloatAsState(targetValue = fraction, animationSpec = tween(600), label = "ring")
+
+    val glow = rememberInfiniteTransition(label = "glow").animateFloat(
+        initialValue = 0.15f,
+        targetValue = 0.5f,
+        animationSpec = infiniteRepeatable(animation = tween(1400), repeatMode = RepeatMode.Reverse),
+        label = "glowAlpha",
+    )
+
+    val label = when (status) {
+        is EngineState.Dialing -> "DIALING"
+        is EngineState.InCall -> "IN CALL"
+        is EngineState.Cooldown -> "COOLDOWN"
+        is EngineState.Paused -> "PAUSED"
+        is EngineState.Finished -> "COMPLETE"
+        is EngineState.Idle -> "READY"
+    }
+    val cooldownUntil = (status as? EngineState.Cooldown)?.untilMs
+
+    GlassCard {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(190.dp), contentAlignment = Alignment.Center) {
+                Canvas(Modifier.fillMaxSize()) {
+                    val strokeW = 12.dp.toPx()
+                    val inset = strokeW / 2 + 8.dp.toPx()
+                    val arcSize = Size(size.width - inset * 2, size.height - inset * 2)
+                    val topLeft = Offset(inset, inset)
+                    rotate(degrees = -90f) {
+                        drawArc(
+                            color = Hair, startAngle = 0f, sweepAngle = 360f, useCenter = false,
+                            topLeft = topLeft, size = arcSize, style = Stroke(width = strokeW),
+                        )
+                        if (animated > 0.001f) {
+                            if (running) {
+                                drawArc(
+                                    color = Cyan.copy(alpha = glow.value * 0.5f),
+                                    startAngle = 0f, sweepAngle = 360f * animated, useCenter = false,
+                                    topLeft = topLeft, size = arcSize,
+                                    style = Stroke(width = strokeW * 2.2f, cap = StrokeCap.Round),
+                                )
+                            }
+                            drawArc(
+                                brush = RingBrush,
+                                startAngle = 0f, sweepAngle = 360f * animated, useCenter = false,
+                                topLeft = topLeft, size = arcSize,
+                                style = Stroke(width = strokeW, cap = StrokeCap.Round),
+                            )
+                        }
+                    }
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 3.sp,
+                        color = if (running) Cyan else Dim,
+                    )
+                    Text(
+                        "${(fraction * 100).roundToInt()}%", fontFamily = Mono,
+                        fontWeight = FontWeight.Bold, fontSize = 38.sp, color = Color.White,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+            if (p != null) {
+                Text(p.number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    "Installed: version ${Updater.installedName(ctx)} (build ${Updater.installedBuild(ctx)})",
-                    fontSize = 13.sp, color = Color(0xFFB0B0B0),
+                    "NUMBER ${p.jobIndex + 1}/${p.jobCount} · CALL ${p.attempt}/${p.total}",
+                    fontFamily = Mono, fontSize = 12.sp, letterSpacing = 2.sp, color = Dim,
                 )
-                Spacer(Modifier.height(8.dp))
-                Button(
-                    onClick = { getUpdate() },
-                    enabled = !updating && !running,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(if (updating) "Please wait…" else "Get latest version") }
-                if (running) {
-                    Text("Stop redialing before updating.", fontSize = 12.sp, color = Color(0xFFB0B0B0))
-                }
-                if (updateMsg.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(updateMsg, fontSize = 14.sp)
-                }
+            } else if (finished) {
+                Text(
+                    "${(status as EngineState.Finished).results.size} CALLS PLACED",
+                    fontFamily = Mono, fontSize = 13.sp, letterSpacing = 2.sp, color = Mint,
+                )
+            } else {
+                Text(
+                    "$jobCount TARGETS · $callsEach CALLS EACH",
+                    fontFamily = Mono, fontSize = 12.sp, letterSpacing = 2.sp, color = Dim,
+                )
+            }
+            if (cooldownUntil != null) {
+                Spacer(Modifier.height(6.dp))
+                CooldownText(cooldownUntil)
+            }
+            if (paused && running && status !is EngineState.Paused) {
+                Spacer(Modifier.height(6.dp))
+                Text("PAUSING AFTER THIS CALL", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 2.sp, color = Magenta)
             }
         }
     }
 }
 
+/** Own composable so the once-per-half-second tick only recomposes this one line. */
 @Composable
-private fun Divider() {
-    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
-}
-
-@Composable
-private fun Section(content: @Composable ColumnScope.() -> Unit) {
-    Surface(color = CardBg, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), content = content)
-    }
-}
-
-@Composable
-private fun StepperRow(
-    title: String,
-    valueText: String,
-    value: Int,
-    range: IntRange,
-    enabled: Boolean,
-    onChange: (Int) -> Unit,
-) {
-    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(title, fontSize = 18.sp, modifier = Modifier.weight(1f))
-            TextButton(onClick = { onChange((value - 1).coerceIn(range)) }, enabled = enabled) {
-                Text("−", fontSize = 24.sp)
-            }
-            Text(valueText, fontSize = 17.sp, textAlign = TextAlign.Center, modifier = Modifier.widthIn(min = 80.dp))
-            TextButton(onClick = { onChange((value + 1).coerceIn(range)) }, enabled = enabled) {
-                Text("+", fontSize = 24.sp)
-            }
+private fun CooldownText(untilMs: Long) {
+    val now by produceState(System.currentTimeMillis(), untilMs) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(500)
         }
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onChange(it.roundToInt().coerceIn(range)) },
-            valueRange = range.first.toFloat()..range.last.toFloat(),
+    }
+    val left = ((untilMs - now) / 1000 + 1).coerceAtLeast(0)
+    Text("NEXT CALL IN ${left}s", fontFamily = Mono, fontSize = 13.sp, letterSpacing = 2.sp, color = Cyan)
+}
+
+// ───────────────────────── Queue ─────────────────────────
+@Composable
+private fun AddNumberRow(enabled: Boolean, onAdd: (String) -> Unit, onContacts: () -> Unit) {
+    // Keystrokes only recompose this row, not the whole screen.
+    var input by remember { mutableStateOf("") }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        OutlinedTextField(
+            value = input,
+            onValueChange = { input = it },
+            label = { Text("Number(s), comma separated") },
+            singleLine = false,
+            maxLines = 3,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             enabled = enabled,
+            colors = fieldColors(),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        GhostButton("CONTACTS", enabled = enabled, modifier = Modifier.width(112.dp).height(56.dp), onClick = onContacts)
+    }
+    Spacer(Modifier.height(10.dp))
+    NeonButton("ADD TO QUEUE", enabled = enabled && input.isNotBlank()) {
+        onAdd(input)
+        input = ""
+    }
+}
+
+@Composable
+private fun fieldColors() = OutlinedTextFieldDefaults.colors(
+    focusedBorderColor = Cyan,
+    unfocusedBorderColor = Hair,
+    disabledBorderColor = Hair,
+    cursorColor = Cyan,
+    focusedLabelColor = Cyan,
+    unfocusedLabelColor = Dim,
+    disabledLabelColor = Dim,
+    focusedTextColor = Color.White,
+    unfocusedTextColor = Color.White,
+    disabledTextColor = Dim,
+)
+
+@Composable
+private fun QueueList(numbers: List<String>, canRemove: Boolean, onRemove: (Int) -> Unit) {
+    val status by RedialService.status.collectAsState()
+    val finished = status is EngineState.Finished
+    val p = status.progress()
+    numbers.forEachIndexed { i, n ->
+        // 0 = queued, 1 = current, 2 = done
+        val state = when {
+            finished -> 2
+            p == null -> 0
+            i < p.jobIndex -> 2
+            i == p.jobIndex -> 1
+            else -> 0
+        }
+        QueueItem(
+            index = i, number = n, state = state,
+            attempt = p?.attempt ?: 0, total = p?.total ?: 0,
+            canRemove = canRemove, onRemove = { onRemove(i) },
         )
     }
 }
 
 @Composable
-private fun StatusCard(status: EngineState, paused: Boolean) {
-    val now by produceState(System.currentTimeMillis(), status) {
-        while (true) {
-            value = System.currentTimeMillis()
-            delay(250)
+private fun QueueItem(
+    index: Int, number: String, state: Int, attempt: Int, total: Int,
+    canRemove: Boolean, onRemove: () -> Unit,
+) {
+    val current = state == 1
+    val done = state == 2
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp)
+            .clip(shape)
+            .background(if (current) Cyan.copy(alpha = 0.10f) else Color.Transparent)
+            .border(1.dp, if (current) Cyan.copy(alpha = 0.7f) else Hair, shape)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (done) "✓" else "%02d".format(index + 1),
+                fontFamily = Mono, fontSize = 13.sp,
+                color = if (done) Mint else if (current) Cyan else Dim,
+                modifier = Modifier.width(30.dp),
+            )
+            Text(
+                number, fontFamily = Mono, fontSize = 17.sp,
+                color = if (done) Dim else Color.White,
+                modifier = Modifier.weight(1f),
+            )
+            if (canRemove) {
+                Text(
+                    "✕", color = Dim, fontSize = 16.sp,
+                    modifier = Modifier.clip(CircleShape).clickable(onClick = onRemove).padding(8.dp),
+                )
+            } else if (current) {
+                Text("$attempt/$total", fontFamily = Mono, fontSize = 14.sp, color = Cyan)
+            }
+        }
+        if (current && total > 0) {
+            Spacer(Modifier.height(8.dp))
+            MiniBar(attempt.toFloat() / total)
         }
     }
+}
 
-    fun line(p: Progress) = "Number ${p.jobIndex + 1} of ${p.jobCount} · ${p.number}\nCall ${p.attempt} of ${p.total}"
-
-    val (title, detail) = when (val s = status) {
-        is EngineState.Dialing -> "Dialing…" to line(s.p)
-        is EngineState.InCall -> "Calling…" to line(s.p)
-        is EngineState.Cooldown -> {
-            val left = ((s.untilMs - now) / 1000 + 1).coerceAtLeast(0)
-            "Next call in ${left}s" to line(s.next)
-        }
-        is EngineState.Paused -> "Paused" to (s.last.progress()?.let { line(it) } ?: "")
-        is EngineState.Finished -> "Done" to "${s.results.size} calls placed"
-        is EngineState.Idle -> "" to ""
+@Composable
+private fun MiniBar(fraction: Float) {
+    val f by animateFloatAsState(targetValue = fraction.coerceIn(0f, 1f), animationSpec = tween(400), label = "bar")
+    Box(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)).background(Hair)) {
+        Box(Modifier.fillMaxWidth(f).fillMaxHeight().background(NeonBrush))
     }
-    val shownTitle =
-        if (paused && status !is EngineState.Paused && status !is EngineState.Finished) "$title · pausing after this call"
-        else title
+}
 
-    Surface(color = Brand, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp)) {
-            Text(shownTitle, fontSize = 20.sp, fontWeight = FontWeight.Medium, color = Color.White)
-            if (detail.isNotEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text(detail, fontSize = 15.sp, color = Color.White)
+@Composable
+private fun SimChip(label: String, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
+    Box(
+        Modifier
+            .clip(shape)
+            .background(if (selected) Cyan.copy(alpha = 0.18f) else Color.Transparent)
+            .border(1.dp, if (selected) Cyan else Hair, shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Text(label, fontFamily = Mono, fontSize = 12.sp, color = if (selected) Cyan else Dim)
+    }
+}
+
+// ───────────────────────── Controls ─────────────────────────
+@Composable
+private fun Controls(
+    running: Boolean,
+    onStart: () -> Unit,
+    onPauseResume: (Boolean) -> Unit,
+    onStop: () -> Unit,
+) {
+    val paused by RedialService.paused.collectAsState()
+    if (!running) {
+        NeonButton("START REDIAL", onClick = onStart)
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            GhostButton(
+                if (paused) "RESUME" else "PAUSE",
+                modifier = Modifier.weight(1f).height(52.dp),
+            ) { onPauseResume(paused) }
+            NeonButton(
+                "STOP", brush = DangerBrush, textColor = Color.White,
+                modifier = Modifier.weight(1f),
+                onClick = onStop,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NeonButton(
+    text: String,
+    enabled: Boolean = true,
+    brush: Brush = NeonBrush,
+    textColor: Color = Ink,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (enabled) brush else DisabledBrush)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text, fontFamily = Mono, fontWeight = FontWeight.Bold,
+            letterSpacing = 3.sp, fontSize = 14.sp,
+            color = if (enabled) textColor else Dim,
+        )
+    }
+}
+
+@Composable
+private fun GhostButton(
+    text: String,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier.fillMaxWidth().height(52.dp),
+    onClick: () -> Unit,
+) {
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier
+            .clip(shape)
+            .border(1.dp, if (enabled) Cyan else Hair, shape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text, fontFamily = Mono, letterSpacing = 2.sp, fontSize = 13.sp,
+            color = if (enabled) Cyan else Dim,
+        )
+    }
+}
+
+@Composable
+private fun LinkButton(text: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Text(text, fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp, color = Cyan)
+    }
+}
+
+// ───────────────────────── Parameters ─────────────────────────
+@Composable
+private fun StepperRow(
+    title: String,
+    value: Int,
+    range: IntRange,
+    enabled: Boolean,
+    format: (Int) -> String,
+    onChange: (Int) -> Unit,
+) {
+    // Slider drags only touch local state; the screen is told once, when the finger lifts.
+    var live by remember(value) { mutableStateOf(value.toFloat()) }
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, fontSize = 16.sp, modifier = Modifier.weight(1f))
+            StepBtn("−", enabled) { onChange((value - 1).coerceIn(range)) }
+            Text(
+                format(live.roundToInt()), fontFamily = Mono, fontSize = 15.sp, color = Cyan,
+                textAlign = TextAlign.Center, modifier = Modifier.widthIn(min = 84.dp),
+            )
+            StepBtn("+", enabled) { onChange((value + 1).coerceIn(range)) }
+        }
+        Slider(
+            value = live,
+            onValueChange = { live = it },
+            onValueChangeFinished = { onChange(live.roundToInt().coerceIn(range)) },
+            valueRange = range.first.toFloat()..range.last.toFloat(),
+            enabled = enabled,
+            colors = SliderDefaults.colors(
+                thumbColor = Cyan,
+                activeTrackColor = Cyan,
+                inactiveTrackColor = Hair,
+                disabledThumbColor = Dim,
+                disabledActiveTrackColor = Dim,
+                disabledInactiveTrackColor = Hair,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun StepBtn(symbol: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .border(1.dp, if (enabled) Hair else Color.Transparent, CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(symbol, fontFamily = Mono, fontSize = 20.sp, color = if (enabled) Cyan else Dim)
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    title: String,
+    subtitle: String?,
+    checked: Boolean,
+    enabled: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, fontSize = 16.sp)
+            if (subtitle != null) {
+                Text(subtitle, fontSize = 12.sp, color = Dim)
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Ink,
+                checkedTrackColor = Cyan,
+                checkedBorderColor = Cyan,
+                uncheckedThumbColor = Dim,
+                uncheckedTrackColor = Hair,
+                uncheckedBorderColor = Hair,
+            ),
+        )
+    }
+}
+
+// ───────────────────────── Updates ─────────────────────────
+@Composable
+private fun UpdateCard(running: Boolean) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var msg by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    // Looked up once; PackageManager calls are not free inside composition.
+    val versionLine = remember { "v${Updater.installedName(ctx)} · build ${Updater.installedBuild(ctx)}" }
+
+    fun getUpdate() {
+        if (busy) return
+        if (!Updater.canInstall(ctx)) {
+            msg = "Allow installs from Squeve Redail, come back, then tap again."
+            Updater.openInstallSettings(ctx)
+            return
+        }
+        busy = true
+        msg = "Checking for updates…"
+        scope.launch {
+            try {
+                val rel = Updater.latest()
+                val have = Updater.installedBuild(ctx)
+                when {
+                    rel == null -> msg = "No release found yet."
+                    rel.build <= have -> msg = "You're on the latest version (build $have)."
+                    else -> {
+                        msg = "Downloading build ${rel.build}… 0%"
+                        val apk = Updater.download(ctx, rel.apkUrl) { pct ->
+                            msg = "Downloading build ${rel.build}… $pct%"
+                        }
+                        msg = "Opening installer…"
+                        Updater.install(ctx, apk)
+                    }
+                }
+            } catch (e: Exception) {
+                msg = "Update failed: ${e.message ?: e.javaClass.simpleName}"
+            } finally {
+                busy = false
             }
         }
     }
+
+    GlassCard {
+        SectionTitle("SYSTEM")
+        Text(versionLine, fontFamily = Mono, fontSize = 13.sp, color = Dim)
+        Spacer(Modifier.height(12.dp))
+        NeonButton(
+            if (busy) "PLEASE WAIT…" else "GET LATEST VERSION",
+            enabled = !busy && !running,
+        ) { getUpdate() }
+        if (running) {
+            Spacer(Modifier.height(6.dp))
+            Text("Stop redialing before updating.", fontSize = 12.sp, color = Dim)
+        }
+        if (msg.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(msg, fontFamily = Mono, fontSize = 12.sp, color = Cyan)
+        }
+    }
+}
+
+// ───────────────────────── Building blocks ─────────────────────────
+@Composable
+private fun GlassCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        color = Panel,
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(
+            1.dp,
+            Brush.linearGradient(listOf(Cyan.copy(alpha = 0.55f), Violet.copy(alpha = 0.25f), Color.Transparent)),
+        ),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(18.dp), content = content)
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(
+        text, fontFamily = Mono, fontWeight = FontWeight.Bold,
+        fontSize = 12.sp, letterSpacing = 4.sp, color = Cyan,
+        modifier = Modifier.padding(bottom = 12.dp),
+    )
+}
+
+@Composable
+private fun Hairline() {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Hair))
 }

@@ -74,7 +74,7 @@ class OverlayController(private val ctx: Context) {
         }
         s.launch {
             while (true) {          // keeps the "next call in Ns" countdown ticking
-                delay(250)
+                delay(1000)
                 render(lastState, lastPaused)
             }
         }
@@ -104,31 +104,39 @@ class OverlayController(private val ctx: Context) {
             is EngineState.Finished -> "Done" to "${s.results.size} calls placed"
             is EngineState.Idle -> "Starting…" to ""
         }
-        title.text =
+        // Only touch views when something actually changed; avoids needless layout passes.
+        val newTitle =
             if (paused && s !is EngineState.Paused && s !is EngineState.Finished) "$t · pausing" else t
-        detail.text = d
-        detail.visibility = if (d.isEmpty()) View.GONE else View.VISIBLE
-        pauseBtn.text = if (paused) "Resume" else "Pause"
-        pauseBtn.isEnabled = s !is EngineState.Finished
-        pauseBtn.alpha = if (s is EngineState.Finished) 0.4f else 1f
+        if (title.text.toString() != newTitle) title.text = newTitle
+        if (detail.text.toString() != d) {
+            detail.text = d
+            detail.visibility = if (d.isEmpty()) View.GONE else View.VISIBLE
+        }
+        val newPause = if (paused) "Resume" else "Pause"
+        if (pauseBtn.text.toString() != newPause) pauseBtn.text = newPause
+        val canPause = s !is EngineState.Finished
+        if (pauseBtn.isEnabled != canPause) {
+            pauseBtn.isEnabled = canPause
+            pauseBtn.alpha = if (canPause) 1f else 0.4f
+        }
     }
 
     private fun buildCard(): LinearLayout {
         title = TextView(ctx).apply {
             setTextColor(Color.WHITE)
             textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             text = "Starting…"
         }
         detail = TextView(ctx).apply {
-            setTextColor(Color.parseColor("#E0E0E0"))
+            setTextColor(Color.parseColor("#8A9BB8"))
             textSize = 13f
             setPadding(0, dp(2), 0, dp(8))
         }
-        pauseBtn = makeButton("Pause", "#7E57C2") {
+        pauseBtn = makeButton("Pause", "#00838F") {
             send(if (RedialService.paused.value) RedialService.ACTION_RESUME else RedialService.ACTION_PAUSE)
         }
-        val stopBtn = makeButton("Stop", "#D32F2F") { send(RedialService.ACTION_STOP) }
+        val stopBtn = makeButton("Stop", "#D50057") { send(RedialService.ACTION_STOP) }
 
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -146,8 +154,8 @@ class OverlayController(private val ctx: Context) {
             setPadding(dp(14), dp(12), dp(14), dp(12))
             background = GradientDrawable().apply {
                 cornerRadius = dp(14).toFloat()
-                setColor(Color.parseColor("#EE303030"))
-                setStroke(dp(2), Color.parseColor("#7E57C2"))
+                setColor(Color.parseColor("#EE0A1020"))
+                setStroke(dp(2), Color.parseColor("#00E5FF"))
             }
             addView(title)
             addView(detail)
