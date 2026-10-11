@@ -2,34 +2,69 @@ package com.squeve.redail.engine
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.net.Uri
 import android.media.AudioManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
 import android.telephony.PhoneStateListener
+import android.telephony.SubscriptionInfo
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-data class SimOption(val label: String, val handle: PhoneAccountHandle)
+/** slot is 0-based. handle may be null when the phone doesn't expose it; the dialer then falls back to slot hints. */
+data class SimOption(val slot: Int, val label: String, val handle: PhoneAccountHandle?)
 
 @SuppressLint("MissingPermission")
-fun listSims(ctx: Context): List<SimOption> = runCatching {
-    val tm = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
-    tm.callCapablePhoneAccounts.mapIndexed { i, h ->
-        val name = tm.getPhoneAccount(h)?.label?.toString().orEmpty()
-        SimOption(if (name.isBlank()) "SIM ${i + 1}" else "SIM ${i + 1} · $name", h)
+@Suppress("DEPRECATION")
+fun listSims(ctx: Context): List<SimOption> {
+    val telecom = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
+    val tm = ctx.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+
+    val handles: List<PhoneAccountHandle> =
+        runCatching { telecom.callCapablePhoneAccounts.toList() }.getOrDefault(emptyList())
+    val subs: List<SubscriptionInfo> = runCatching {
+        val sm = ctx.getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+        sm.activeSubscriptionInfoList?.toList() ?: emptyList()
+    }.getOrDefault(emptyList())
+
+    // Best case: real subscriptions, each matched to its calling account.
+    if (subs.isNotEmpty()) {
+        return subs.sortedBy { it.simSlotIndex }.map { sub ->
+            val handle = handles.firstOrNull { h ->
+                h.id == sub.subscriptionId.toString() ||
+                    (Build.VERSION.SDK_INT >= 30 && runCatching {
+                        tm.createForPhoneAccountHandle(h)?.subscriptionId == sub.subscriptionId
+                    }.getOrDefault(false))
+            }
+            val carrier = (sub.carrierName ?: sub.displayName)?.toString().orEmpty()
+            val name = "SIM ${sub.simSlotIndex + 1}"
+            SimOption(sub.simSlotIndex, if (carrier.isBlank()) name else "$name · $carrier", handle)
+        }
     }
-}.getOrDefault(emptyList())
+
+    // Subscriptions hidden (permission/OEM): fall back to the calling accounts themselves.
+    if (handles.size > 1) {
+        return handles.mapIndexed { i, h ->
+            val label = runCatching { telecom.getPhoneAccount(h)?.label?.toString() }.getOrNull().orEmpty()
+            SimOption(i, if (label.isBlank()) "SIM ${i + 1}" else "SIM ${i + 1} · $label", h)
+        }
+    }
+
+    // Last resort: the phone says it has several SIM slots.
+    val slots = runCatching { tm.phoneCount }.getOrDefault(1)
+    return if (slots > 1) (0 until slots).map { SimOption(it, "SIM ${it + 1}", null) } else emptyList()
+}
 
 class TelecomDialer(
     private val ctx: Context,
-    private val account: PhoneAccountHandle?,
+    private val sim: SimOption?,
 ) : Dialer {
     private val telecom get() = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
 
@@ -37,7 +72,17 @@ class TelecomDialer(
     override fun place(number: String, speaker: Boolean): Boolean = runCatching {
         val extras = Bundle()
         if (speaker) extras.putBoolean(TelecomManager.EXTRA_START_CALL_WITH_SPEAKERPHONE, true)
-        if (account != null) extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+        if (sim != null) {
+            if (sim.handle != null) {
+                extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, sim.handle)
+            } else {
+                // No account handle: use the slot hints many phone apps understand.
+                extras.putInt("com.android.phone.extra.slot", sim.slot)
+                extras.putInt("slot", sim.slot)
+                extras.putInt("simSlot", sim.slot)
+                extras.putInt("slot_id", sim.slot)
+            }
+        }
         telecom.placeCall(Uri.fromParts("tel", number, null), extras)
         true
     }.getOrDefault(false)

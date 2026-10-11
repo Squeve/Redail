@@ -3,10 +3,12 @@ package com.squeve.redail.service
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.graphics.Color
 import android.os.IBinder
 import android.os.PowerManager
-import android.telecom.PhoneAccountHandle
 import androidx.core.app.NotificationCompat
+import com.squeve.redail.MainActivity
+import com.squeve.redail.R
 import com.squeve.redail.engine.*
 import com.squeve.redail.model.*
 import kotlinx.coroutines.*
@@ -19,12 +21,15 @@ class RedialService : Service() {
         const val ACTION_PAUSE = "com.squeve.redail.PAUSE"
         const val ACTION_RESUME = "com.squeve.redail.RESUME"
         const val ACTION_STOP = "com.squeve.redail.STOP"
+        const val ACTION_HOLD = "com.squeve.redail.HOLD"      // cancel the auto hang-up for this call
+        const val ACTION_REARM = "com.squeve.redail.REARM"    // start the auto hang-up countdown again
         private const val CHANNEL = "redail"
         private const val NOTIF_ID = 1
 
         /** Hand-off from the UI. */
         @Volatile var pendingQueue: List<RedialJob> = emptyList()
-        @Volatile var pendingSim: PhoneAccountHandle? = null
+        @Volatile var pendingOrder: CallOrder = CallOrder.SEQUENTIAL
+        @Volatile var pendingSim: SimOption? = null
         @Volatile var engine: RedialEngine? = null
 
         /** Live state for the UI. */
@@ -46,7 +51,7 @@ class RedialService : Service() {
         val action = intent?.action
         when (action) {
             ACTION_START -> {
-                startForeground(NOTIF_ID, notification(describe(status.value)))
+                startForeground(NOTIF_ID, notification(status.value))
 
                 // Only ever one engine running. A second Start tap must not spawn a second dialer.
                 if (engine?.isRunning != true) {
@@ -61,7 +66,7 @@ class RedialService : Service() {
                     acquireWakeLock()
                     if (overlay == null) overlay = OverlayController(this)
                     overlay?.show()
-                    e.start(scope, pendingQueue)
+                    e.start(scope, pendingQueue, pendingOrder)
 
                     scope.launch {
                         e.state.collect { s ->
@@ -72,7 +77,7 @@ class RedialService : Service() {
                                 if (engine?.isRunning != true) stopSelf()
                             } else if (s !is EngineState.Idle) {
                                 getSystemService(NotificationManager::class.java)
-                                    .notify(NOTIF_ID, notification(describe(s)))
+                                    .notify(NOTIF_ID, notification(s))
                             }
                         }
                     }
@@ -81,6 +86,8 @@ class RedialService : Service() {
             }
             ACTION_PAUSE -> engine?.pause()
             ACTION_RESUME -> engine?.resume()
+            ACTION_HOLD -> engine?.holdCall()
+            ACTION_REARM -> engine?.rearmTimer()
             ACTION_STOP -> {
                 engine?.stop()
                 status.value = EngineState.Idle
@@ -95,9 +102,9 @@ class RedialService : Service() {
 
     private fun describe(s: EngineState): String = when (s) {
         is EngineState.Idle -> "Starting…"
-        is EngineState.Dialing -> "Dialing ${s.p.number} · call ${s.p.attempt}/${s.p.total} · number ${s.p.jobIndex + 1}/${s.p.jobCount}"
-        is EngineState.InCall -> "Calling ${s.p.number} · call ${s.p.attempt}/${s.p.total} · number ${s.p.jobIndex + 1}/${s.p.jobCount}"
-        is EngineState.Cooldown -> "Next: ${s.next.number} · call ${s.next.attempt}/${s.next.total}"
+        is EngineState.Dialing -> "Dialing ${s.p.number} · call ${s.p.step}/${s.p.steps}"
+        is EngineState.InCall -> "Calling ${s.p.number} · call ${s.p.step}/${s.p.steps}"
+        is EngineState.Cooldown -> "Next: ${s.next.number} · call ${s.next.step}/${s.next.steps}"
         is EngineState.Paused -> "Paused"
         is EngineState.Finished -> "Done · ${s.results.size} calls"
     }
@@ -110,15 +117,39 @@ class RedialService : Service() {
         ),
     )
 
-    private fun notification(text: String) = NotificationCompat.Builder(this, CHANNEL)
-        .setSmallIcon(android.R.drawable.sym_action_call)
-        .setContentTitle("Squeve Redail")
-        .setContentText(text)
-        .setOngoing(true)
-        .addAction(action("Pause", ACTION_PAUSE))
-        .addAction(action("Resume", ACTION_RESUME))
-        .addAction(action("Stop", ACTION_STOP))
-        .build()
+    private fun notification(s: EngineState): Notification {
+        val open = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val b = NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(Color.parseColor("#00E5FF"))
+            .setContentTitle("Squeve Redail")
+            .setContentText(describe(s))
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .addAction(action("Pause", ACTION_PAUSE))
+            .addAction(action("Resume", ACTION_RESUME))
+            .addAction(action("Stop", ACTION_STOP))
+
+        // Run progress bar.
+        val p = s.progress()
+        if (p != null) b.setProgress(p.steps, p.step - 1, false)
+
+        // Live countdown (hang-up timer or wait before the next call) that ticks without re-posting.
+        val until: Long? = when (s) {
+            is EngineState.InCall -> s.hangUpAt
+            is EngineState.Cooldown -> s.untilMs
+            else -> null
+        }
+        if (until != null) {
+            b.setWhen(until).setShowWhen(true).setUsesChronometer(true).setChronometerCountDown(true)
+        }
+        return b.build()
+    }
 
     private fun acquireWakeLock() {
         releaseWakeLock()

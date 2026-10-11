@@ -5,8 +5,8 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
 /**
- * Strictly sequential: number 1 x N calls, then number 2 x N calls, and so on.
  * One call at a time. The next call is never placed until the phone line is idle again.
+ * Order is decided up front (one by one, round robin or shuffled).
  */
 class RedialEngine(
     private val dialer: Dialer,
@@ -14,7 +14,7 @@ class RedialEngine(
     private val callLog: CallLogReader,
     private val audio: AudioControl = NoAudio,
     private val onResult: suspend (AttemptResult) -> Unit = {},
-    private val startTimeoutMs: Long = 15_000,   // max wait for a placed call to actually begin
+    private val startTimeoutMs: Long = 10_000,   // max wait for a placed call to actually begin
     private val settleTimeoutMs: Long = 8_000,   // max wait for the line to free up after hang up
     private val postCallPauseMs: Long = 800,     // let the telephony stack settle between calls
 ) {
@@ -24,54 +24,136 @@ class RedialEngine(
     private val pausedFlow = MutableStateFlow(false)
     val isPaused: StateFlow<Boolean> = pausedFlow.asStateFlow()
 
+    /** When the auto hang-up fires for the call in progress. null = timer off. */
+    private val hangUpAt = MutableStateFlow<Long?>(null)
+    @Volatile private var currentLimit: Long? = null
+    @Volatile private var inCallNow = false
+
     private var runJob: Job? = null
     val isRunning: Boolean get() = runJob?.isActive == true
 
-    fun start(scope: CoroutineScope, queue: List<RedialJob>) {
+    fun start(scope: CoroutineScope, queue: List<RedialJob>, order: CallOrder = CallOrder.SEQUENTIAL) {
         if (isRunning || queue.isEmpty()) return
         pausedFlow.value = false
-        runJob = scope.launch { run(queue) }
+        runJob = scope.launch { run(queue, order) }
     }
 
     fun pause() { pausedFlow.value = true }
     fun resume() { pausedFlow.value = false }
 
+    /** Cancel the auto hang-up for the current call; it now ends by itself. */
+    fun holdCall() {
+        if (inCallNow) hangUpAt.value = null
+    }
+
+    /** Start the auto hang-up countdown again for the current call. */
+    fun rearmTimer() {
+        val limit = currentLimit
+        if (inCallNow && limit != null) hangUpAt.value = System.currentTimeMillis() + limit
+    }
+
     fun stop() {
         runJob?.cancel()
         runJob = null
         pausedFlow.value = false
+        hangUpAt.value = null
+        inCallNow = false
         dialer.hangUp()
         audio.restore()
         _state.value = EngineState.Idle
     }
 
-    private suspend fun run(queue: List<RedialJob>) {
+    // ───────────── ordering ─────────────
+    private fun buildOrder(queue: List<RedialJob>, order: CallOrder): List<Int> {
+        val slots = mutableListOf<Int>()
+        when (order) {
+            CallOrder.SEQUENTIAL ->
+                queue.forEachIndexed { i, j -> repeat(j.attempts) { slots += i } }
+
+            CallOrder.ROUND_ROBIN -> {
+                val most = queue.maxOf { it.attempts }
+                for (round in 1..most) {
+                    queue.forEachIndexed { i, j -> if (j.attempts >= round) slots += i }
+                }
+            }
+
+            CallOrder.RANDOM -> {
+                queue.forEachIndexed { i, j -> repeat(j.attempts) { slots += i } }
+                slots.shuffle()
+                separateRepeats(slots)
+            }
+        }
+        return slots
+    }
+
+    private fun pairDup(l: List<Int>, i: Int) = i in 1 until l.size && l[i] == l[i - 1]
+
+    private fun dupsAround(l: List<Int>, a: Int, b: Int) =
+        listOf(a, a + 1, b, b + 1).distinct().count { pairDup(l, it) }
+
+    /** After shuffling, try not to call the same number twice in a row. */
+    private fun separateRepeats(l: MutableList<Int>) {
+        for (k in 1 until l.size) {
+            if (!pairDup(l, k)) continue
+            for (c in (0 until l.size).shuffled().take(60)) {
+                if (c == k) continue
+                val before = dupsAround(l, k, c)
+                val tmp = l[k]; l[k] = l[c]; l[c] = tmp
+                if (dupsAround(l, k, c) < before) {
+                    if (!pairDup(l, k)) break
+                } else {
+                    val back = l[k]; l[k] = l[c]; l[c] = back
+                }
+            }
+        }
+    }
+
+    // ───────────── main loop ─────────────
+    private suspend fun run(queue: List<RedialJob>, order: CallOrder) {
         val results = mutableListOf<AttemptResult>()
         try {
-            // Flat, ordered plan: all calls for number 1, then all calls for number 2, ...
-            val plan = queue.flatMapIndexed { ji, job ->
-                (1..job.attempts).map { a -> Progress(ji, queue.size, job.number, a, job.attempts) }
+            val slots = buildOrder(queue, order)
+            val steps = slots.size
+
+            val counter = IntArray(queue.size)
+            val attemptNo = IntArray(steps)
+            slots.forEachIndexed { s, ji ->
+                counter[ji]++
+                attemptNo[s] = counter[ji]
             }
-            val skip = mutableSetOf<Int>()
+            val done = IntArray(queue.size)
+            val skipped = BooleanArray(queue.size)
+
+            fun progressAt(s: Int): Progress {
+                val ji = slots[s]
+                val job = queue[ji]
+                return Progress(ji, queue.size, job.number, attemptNo[s], job.attempts, s + 1, steps, done.toList())
+            }
+
             var first = true
             var lastGap = 0L
 
-            for (p in plan) {
-                if (p.jobIndex in skip) continue
-                val job = queue[p.jobIndex]
+            for (s in 0 until steps) {
+                val ji = slots[s]
+                if (skipped[ji]) continue
+                val job = queue[ji]
 
-                if (!first) cooldown(p, lastGap)
+                if (!first) cooldown(progressAt(s), lastGap)
                 first = false
 
                 awaitNotPaused()
                 waitUntilIdle()
 
-                val r = dialOnce(job, p)
+                val r = dialOnce(job, progressAt(s))
                 results += r
                 onResult(r)
-                lastGap = job.gapMs
 
-                if (r.outcome == AttemptOutcome.CONNECTED && job.stopOnConnected) skip += p.jobIndex
+                done[ji]++
+                lastGap = job.gapMs
+                if (r.outcome == AttemptOutcome.CONNECTED && job.stopOnConnected) {
+                    skipped[ji] = true
+                    done[ji] = job.attempts
+                }
             }
 
             pausedFlow.value = false
@@ -96,11 +178,16 @@ class RedialEngine(
             return failed(job, p)
         }
 
-        _state.value = EngineState.InCall(p)
-
-        // Let the call run until it ends, or hang up when the call duration is reached.
         val limit = job.hangUpAfterMs
+        currentLimit = limit
+        hangUpAt.value = limit?.let { System.currentTimeMillis() + it }
+        inCallNow = true
+
         val endedByItself: Boolean = coroutineScope {
+            // Keeps the published state in step with the hang-up timer (armed, held, re-armed).
+            val mirror = launch {
+                hangUpAt.collect { at -> _state.value = EngineState.InCall(p, at, limit != null) }
+            }
             // Re-apply speaker/mute while the call runs; the phone resets audio when the call connects.
             val keeper = if (job.speaker || job.muteMic) {
                 launch {
@@ -111,16 +198,32 @@ class RedialEngine(
                 }
             } else null
 
-            val ended = if (limit == null) {
-                phoneBusy.first { !it }
-                true
-            } else {
-                withTimeoutOrNull(limit) { phoneBusy.first { !it } } != null
+            var ended = false
+            while (true) {
+                val deadline = hangUpAt.value
+                val remaining =
+                    if (deadline == null) Long.MAX_VALUE
+                    else (deadline - System.currentTimeMillis()).coerceAtLeast(0)
+
+                val r = withTimeoutOrNull(remaining) {
+                    combine(phoneBusy, hangUpAt) { busy, d -> busy to d }
+                        .first { (busy, d) -> !busy || d != deadline }
+                }
+                if (r == null) { ended = false; break }       // timer reached: hang up
+                if (!r.first) { ended = true; break }         // call ended by itself
+                // otherwise the timer was held / re-armed: loop and recompute
             }
+            mirror.cancel()
             keeper?.cancel()
             ended
         }
+
         if (!endedByItself) dialer.hangUp()
+        hangUpAt.value = null
+        currentLimit = null
+        inCallNow = false
+        // Call is over: stop showing the old countdown while the line settles.
+        _state.value = EngineState.InCall(p, null, false)
 
         awaitLineFree()
         audio.restore()

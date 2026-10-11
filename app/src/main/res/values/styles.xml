@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Main app theme (shown after the splash). Dark window so there is never a white flash. -->
+    <style name="Theme.SqueveRedail" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/ink</item>
+        <item name="android:statusBarColor">@color/ink</item>
+        <item name="android:navigationBarColor">@color/ink</item>
+    </style>
+
+    <!-- Launch screen: logo on the app's navy. -->
+    <style name="Theme.SqueveRedail.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/ink</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/splash_logo</item>
+        <item name="postSplashScreenTheme">@style/Theme.SqueveRedail</item>
+    </style>
+</resources>

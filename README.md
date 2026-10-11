@@ -1,23 +1,26 @@
 # Squeve Redail
 
-Android auto-redial app. Add several numbers, set calls per number, call duration and interval, and it dials them strictly in order: number 1 x N calls, then number 2 x N calls, and so on until done.
+Android auto-redial app. Add numbers, choose how calls are ordered, set calls per number, call duration and interval, pick the SIM, and it dials with one call at a time.
 
-While redialing, a draggable floating card shows live progress with Pause/Resume and Stop. It needs "Display over other apps"; the app asks once on first START.
+- **Order:** one by one, round robin, or random
+- **SIM:** phone default, SIM 1 or SIM 2
+- **Floating control:** expanded card (progress, hang-up countdown with KEEP CALL, pause, stop) or a small snapping bubble
+- **Fonts:** optional custom fonts, see `app/src/main/assets/fonts/README.txt`
+- **Audio:** start on speaker, mute microphone (best effort)
+- **Updates:** SYSTEM tab > Get latest version
 
 ## Build the APK on GitHub
 
 1. Push this project to `main`.
 2. Open the **Actions** tab. *Build APK* runs on every push (or hit **Run workflow**).
-3. Download **SqueveRedail-apk** from the run's Artifacts.
-4. Every successful build on `main` is also published as a GitHub Release (`build-<number>`). The app's **Settings > Get latest version** downloads that release and installs it.
+3. Every successful build on `main` is published as a GitHub Release (`build-<number>`); the app updates from it.
 
 ## Install
 
-Enable "install unknown apps", install the APK, tap **Grant permissions**, add numbers, press **START**.
-Disable battery optimization for the app, especially on Xiaomi / Oppo / Samsung.
+Enable "install unknown apps", install the APK, open the SYSTEM tab and clear the READINESS list, then press START.
 
 ## Notes
 
-- Debug-signed APK for sideloading, signed with the key in `app/squeve-debug.store` so updates install over older builds.
+- Signed with the key in `app/squeve-debug.store` so updates install over older builds.
 - Not Play Store compliant (call + call-log permissions). Distribute via GitHub releases.
 - Android gives no "answered" signal. "Skip if answered" uses call-log duration and is off by default.

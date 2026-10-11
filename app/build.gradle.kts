@@ -14,8 +14,8 @@ android {
         applicationId = "com.squeve.redail"
         minSdk = 28            // endCall() needs API 28+
         targetSdk = 34
-        versionCode = if (runNumber != null) runNumber + 100 else 6
-        versionName = "0.6"
+        versionCode = if (runNumber != null) runNumber + 100 else 9
+        versionName = "0.9"
     }
 
     // Same key on every build, so new APKs install over old ones.
@@ -63,6 +63,8 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-core")
+    implementation("androidx.core:core-splashscreen:1.0.1")
     // Installs the Compose baseline profiles on the device so first launches are fast.
     implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 
