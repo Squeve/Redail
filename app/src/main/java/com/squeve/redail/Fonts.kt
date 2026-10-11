@@ -27,15 +27,15 @@ object Fonts {
         val am = ctx.assets
         body = runCatching {
             FontFamily(
-                Font(am, "fonts/sans_regular.ttf", FontWeight.Normal),
-                Font(am, "fonts/sans_medium.ttf", FontWeight.Medium),
-                Font(am, "fonts/sans_bold.ttf", FontWeight.Bold),
+                Font(path = "fonts/sans_regular.ttf", assetManager = am, weight = FontWeight.Normal),
+                Font(path = "fonts/sans_medium.ttf", assetManager = am, weight = FontWeight.Medium),
+                Font(path = "fonts/sans_bold.ttf", assetManager = am, weight = FontWeight.Bold),
             )
         }.getOrDefault(FontFamily.SansSerif)
         mono = runCatching {
             FontFamily(
-                Font(am, "fonts/mono_regular.ttf", FontWeight.Normal),
-                Font(am, "fonts/mono_bold.ttf", FontWeight.Bold),
+                Font(path = "fonts/mono_regular.ttf", assetManager = am, weight = FontWeight.Normal),
+                Font(path = "fonts/mono_bold.ttf", assetManager = am, weight = FontWeight.Bold),
             )
         }.getOrDefault(FontFamily.Monospace)
     }
