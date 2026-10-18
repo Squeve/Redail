@@ -14,8 +14,8 @@ android {
         applicationId = "com.squeve.redail"
         minSdk = 28            // endCall() needs API 28+
         targetSdk = 34
-        versionCode = if (runNumber != null) runNumber + 100 else 10
-        versionName = "0.10"
+        versionCode = if (runNumber != null) runNumber + 100 else 13
+        versionName = "0.13"
     }
 
     // Same key on every build, so new APKs install over old ones.

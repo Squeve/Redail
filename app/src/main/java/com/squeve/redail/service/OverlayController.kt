@@ -10,6 +10,9 @@ import android.graphics.PixelFormat
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -71,6 +74,11 @@ class OverlayController(private val ctx: Context) {
         }
         card.visibility = if (collapsed) View.GONE else View.VISIBLE
         bubble.visibility = if (collapsed) View.VISIBLE else View.GONE
+        if (Build.VERSION.SDK_INT >= 29) {
+            frame.isForceDarkAllowed = false
+            card.isForceDarkAllowed = false
+            bubble.isForceDarkAllowed = false
+        }
 
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -134,6 +142,7 @@ class OverlayController(private val ctx: Context) {
     private fun render(s: EngineState, paused: Boolean) {
         if (root == null) return
         val now = System.currentTimeMillis()
+        bubble.look = prefs.getInt("bubbleLook", 0)
 
         fun line(p: Progress) =
             "${p.number}\nCall ${p.step}/${p.steps} · this number ${p.attempt}/${p.total}"
@@ -361,27 +370,53 @@ class OverlayController(private val ctx: Context) {
     }
 }
 
+/** Colours for one bubble look. */
+private class Pal(
+    val fill: Int, val rim: Int, val track: Int,
+    val text: Int, val textOut: Int, val sub: Int,
+    val under: Int, val ringMode: Int,      // ringMode: 0 = state colour, 1 = darker state colour, 2 = navy
+)
+
 /**
- * Round readout: opaque dark disc with a white hairline, a thick progress ring and a pulsing glow,
- * so it stands out on dark and light screens alike. Redraws on value changes and while it pulses.
+ * Round readout with three looks (dark, light, neon). Text and ring are drawn with a contrasting outline,
+ * so they stay readable even when a phone lightens or darkens the disc. Pulses only while visible.
  */
 private class BubbleView(ctx: Context) : View(ctx) {
     private var fraction = 0f
     private var label = ""
     private var sub = ""
     private var ringColor = Color.parseColor("#00E5FF")
+    private var ringDark = Color.parseColor("#007C91")
     private var pulse = 1f
     private var pulser: ValueAnimator? = null
 
+    /** 0 = dark, 1 = light, 2 = neon. */
+    var look = 0
+        set(value) {
+            if (field != value) {
+                field = value
+                invalidate()
+            }
+        }
+
     private val d = ctx.resources.displayMetrics.density
-    private val core = 30 * d          // radius of the dark disc
+    private val core = 31 * d          // radius of the disc
     private val glowPad = 8 * d        // room around the disc for the glow
 
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FF0A1020") }
+    private val palettes = arrayOf(
+        Pal(0xFF0A1020.toInt(), 0xE6FFFFFF.toInt(), 0xFF3A4F7A.toInt(),
+            0xFFFFFFFF.toInt(), 0xFF0A1020.toInt(), 0xFFC9D6F0.toInt(), 0xFF0A1020.toInt(), 0),
+        Pal(0xFFF3F7FF.toInt(), 0xFF0A1020.toInt(), 0xFFB8C6E4.toInt(),
+            0xFF0A1020.toInt(), 0xFFFFFFFF.toInt(), 0xFF2E4066.toInt(), 0xFFFFFFFF.toInt(), 1),
+        Pal(0xFF00E5FF.toInt(), 0xFFFFFFFF.toInt(), 0xFF00A8C0.toInt(),
+            0xFF0A1020.toInt(), 0xFFFFFFFF.toInt(), 0xFF0A1020.toInt(), 0xFFFFFFFF.toInt(), 2),
+    )
+    private val navy = 0xFF0A1020.toInt()
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 1.6f * d
-        color = Color.parseColor("#E6FFFFFF")
+        strokeWidth = 1.8f * d
     }
     private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -390,33 +425,62 @@ private class BubbleView(ctx: Context) : View(ctx) {
     private val track = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 5.5f * d
-        color = Color.parseColor("#2E4066")
+    }
+    private val arcUnder = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 8.5f * d
+        strokeCap = Paint.Cap.ROUND
     }
     private val arc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 5.5f * d
         strokeCap = Paint.Cap.ROUND
     }
+    private val bold = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
     private val big = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
         textAlign = Paint.Align.CENTER
         textSize = 14 * d
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        typeface = bold
+    }
+    private val bigOut = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = 14 * d
+        typeface = bold
+        style = Paint.Style.STROKE
+        strokeWidth = 3.2f * d
+        strokeJoin = Paint.Join.ROUND
     }
     private val small = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#B7C4DD")
         textAlign = Paint.Align.CENTER
         textSize = 7.5f * d
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        typeface = bold
+    }
+    private val smallOut = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textAlign = Paint.Align.CENTER
+        textSize = 7.5f * d
+        typeface = bold
+        style = Paint.Style.STROKE
+        strokeWidth = 2.4f * d
+        strokeJoin = Paint.Join.ROUND
     }
     private val box = RectF()
     private val glowAlphas = intArrayOf(95, 55, 28)
+
+    init {
+        if (Build.VERSION.SDK_INT >= 29) isForceDarkAllowed = false
+    }
 
     fun update(f: Float, l: String, s: String, c: Int) {
         if (f != fraction || l != label || s != sub || c != ringColor) {
             fraction = f
             label = l
             sub = s
+            if (c != ringColor) {
+                val hsv = FloatArray(3)
+                Color.colorToHSV(c, hsv)
+                hsv[2] *= 0.6f
+                ringDark = Color.HSVToColor(hsv)
+            }
             ringColor = c
             invalidate()
         }
@@ -458,28 +522,73 @@ private class BubbleView(ctx: Context) : View(ctx) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        val pal = palettes[look.coerceIn(0, palettes.size - 1)]
+        val ring = when (pal.ringMode) {
+            1 -> ringDark
+            2 -> navy
+            else -> ringColor
+        }
         val cx = width / 2f
         val cy = height / 2f
 
-        // glow halo in the ring colour
+        // glow halo in the state colour
         for (i in glowAlphas.indices) {
             glow.color = ringColor
             glow.alpha = (glowAlphas[i] * pulse).toInt()
             canvas.drawCircle(cx, cy, core + (1.5f + i * 2.5f) * d, glow)
         }
 
+        fill.color = pal.fill
         canvas.drawCircle(cx, cy, core, fill)
+        rim.color = pal.rim
         canvas.drawCircle(cx, cy, core, rim)
 
         val r = core - 8 * d
         box.set(cx - r, cy - r, cx + r, cy + r)
+        track.color = pal.track
         canvas.drawArc(box, 0f, 360f, false, track)
         if (fraction > 0.001f) {
-            arc.color = ringColor
-            canvas.drawArc(box, -90f, 360f * fraction, false, arc)
+            val sweep = 360f * fraction
+            arcUnder.color = pal.under
+            canvas.drawArc(box, -90f, sweep, false, arcUnder)
+            arc.color = ring
+            canvas.drawArc(box, -90f, sweep, false, arc)
         }
 
+        // outlined text: legible on any disc colour
+        bigOut.color = pal.textOut
+        big.color = pal.text
+        canvas.drawText(label, cx, cy + 1 * d, bigOut)
         canvas.drawText(label, cx, cy + 1 * d, big)
+        smallOut.color = pal.textOut
+        small.color = pal.sub
+        canvas.drawText(sub, cx, cy + 12 * d, smallOut)
         canvas.drawText(sub, cx, cy + 12 * d, small)
     }
+}
+
+/** Shows a sample bubble in the chosen look for a few seconds, so the look can be judged on this phone. */
+fun showBubblePreview(context: Context) {
+    if (!Settings.canDrawOverlays(context)) return
+    val app = context.applicationContext
+    val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    val look = app.getSharedPreferences("redail", Context.MODE_PRIVATE).getInt("bubbleLook", 0)
+    val density = app.resources.displayMetrics.density
+    val view = BubbleView(app).apply {
+        this.look = look
+        update(0.42f, "0:18", "HANG UP", Color.parseColor("#00E5FF"))
+    }
+    val params = WindowManager.LayoutParams(
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.WRAP_CONTENT,
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+        PixelFormat.TRANSLUCENT,
+    ).apply {
+        gravity = Gravity.TOP or Gravity.END
+        x = (24 * density).toInt()
+        y = (240 * density).toInt()
+    }
+    if (runCatching { wm.addView(view, params) }.isFailure) return
+    Handler(Looper.getMainLooper()).postDelayed({ runCatching { wm.removeView(view) } }, 4000)
 }

@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import android.provider.CallLog
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.widget.Toast
@@ -40,6 +41,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -88,18 +93,25 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.squeve.redail.engine.SimOption
+import com.squeve.redail.engine.RecentCall
 import com.squeve.redail.engine.listSims
+import com.squeve.redail.engine.loadRecentCalls
 import com.squeve.redail.model.*
 import com.squeve.redail.service.RedialService
+import com.squeve.redail.service.showBubblePreview
 import com.squeve.redail.update.Updater
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 // ───────────────────────── Palette & type ─────────────────────────
@@ -224,10 +236,42 @@ private fun allGranted(ctx: Context) = REQUIRED.all {
 private fun permsToRequest(): Array<String> =
     if (Build.VERSION.SDK_INT >= 33) REQUIRED + Manifest.permission.POST_NOTIFICATIONS else REQUIRED
 
-private fun addNumbers(target: MutableList<String>, raw: String) {
+private fun addNumbers(target: MutableList<String>, raw: String): List<String> {
+    val added = mutableListOf<String>()
     raw.split(Regex("[,;\\n]+")).forEach { part ->
         val cleaned = part.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
-        if (cleaned.any { it.isDigit() }) target.add(cleaned)
+        if (cleaned.any { it.isDigit() }) {
+            target.add(cleaned)
+            added.add(cleaned)
+        }
+    }
+    return added
+}
+
+private fun typeLabel(t: Int) = when (t) {
+    CallLog.Calls.INCOMING_TYPE -> "IN"
+    CallLog.Calls.OUTGOING_TYPE -> "OUT"
+    CallLog.Calls.MISSED_TYPE -> "MISSED"
+    CallLog.Calls.REJECTED_TYPE -> "REJECTED"
+    CallLog.Calls.BLOCKED_TYPE -> "BLOCKED"
+    else -> "CALL"
+}
+
+private fun typeColor(t: Int) = when (t) {
+    CallLog.Calls.OUTGOING_TYPE -> Cyan
+    CallLog.Calls.INCOMING_TYPE -> Mint
+    CallLog.Calls.MISSED_TYPE, CallLog.Calls.REJECTED_TYPE, CallLog.Calls.BLOCKED_TYPE -> Magenta
+    else -> Dim
+}
+
+private fun ago(ms: Long): String {
+    val s = (System.currentTimeMillis() - ms) / 1000
+    return when {
+        s < 60 -> "now"
+        s < 3600 -> "${s / 60}m ago"
+        s < 86400 -> "${s / 3600}h ago"
+        s < 172800 -> "yesterday"
+        else -> "${s / 86400}d ago"
     }
 }
 
@@ -276,11 +320,31 @@ private object ResumeSignal {
     val tick = MutableStateFlow(0)
 }
 
+/** Per-number settings. A null field follows the global setting. hangUp is in seconds; 0 means no limit. */
+private data class NumOverride(val calls: Int? = null, val hangUp: Int? = null, val gap: Int? = null)
+
 /** All user settings in one place; changes only recompose whatever reads that field. */
 @Stable
 private class Config(private val prefs: SharedPreferences) {
     val numbers = mutableStateListOf<String>().apply {
         prefs.getString("numbers", "")?.split("\n")?.filter { it.isNotBlank() }?.let { addAll(it) }
+    }
+
+    /** Display names for numbers that came from contacts or the call log. */
+    val names = mutableStateMapOf<String, String>().apply {
+        prefs.getString("names", "")?.split("\n")?.forEach { line ->
+            val i = line.indexOf('|')
+            if (i > 0) put(line.substring(0, i), line.substring(i + 1))
+        }
+    }
+    /** Numbers that have their own calls / hang-up / interval. Keyed by number. */
+    val overrides = mutableStateMapOf<String, NumOverride>().apply {
+        prefs.getString("overrides", "")?.split("\n")?.forEach { line ->
+            val f = line.split('|')
+            if (f.size == 4 && f[0].isNotBlank()) {
+                put(f[0], NumOverride(f[1].toIntOrNull(), f[2].toIntOrNull(), f[3].toIntOrNull()))
+            }
+        }
     }
     var calls by mutableStateOf(prefs.getInt("calls", 5))
     var gapSec by mutableStateOf(prefs.getInt("gap", 5))
@@ -290,17 +354,50 @@ private class Config(private val prefs: SharedPreferences) {
     var speakerOn by mutableStateOf(prefs.getBoolean("speaker", false))
     var muteOn by mutableStateOf(prefs.getBoolean("mute", false))
     var simSlot by mutableStateOf(prefs.getInt("simSlot", -1))     // -1 = phone default
+    var bubbleLook by mutableStateOf(prefs.getInt("bubbleLook", 0)) // 0 dark, 1 light, 2 neon
     var order by mutableStateOf(
         CallOrder.values().getOrElse(prefs.getInt("order", 0)) { CallOrder.SEQUENTIAL },
     )
 
+    fun callsFor(n: String): Int = overrides[n]?.calls ?: calls
+    fun gapFor(n: String): Int = overrides[n]?.gap ?: gapSec
+
+    /** Hang-up in seconds for this number, or null when calls should run until they end by themselves. */
+    fun hangUpFor(n: String): Int? = when (val h = overrides[n]?.hangUp) {
+        null -> if (limitOn) durSec else null
+        0 -> null
+        else -> h
+    }
+
+    /** Short description of what is custom about this number, or null when it follows the defaults. */
+    fun customSummary(n: String): String? {
+        val o = overrides[n] ?: return null
+        val parts = listOfNotNull(
+            o.calls?.let { "×$it calls" },
+            o.hangUp?.let { if (it == 0) "no hang-up" else "${it}s hang-up" },
+            o.gap?.let { "${it}s gap" },
+        )
+        return if (parts.isEmpty()) null else "CUSTOM · " + parts.joinToString(" · ")
+    }
+
     fun save() {
         prefs.edit()
             .putString("numbers", numbers.joinToString("\n"))
+            .putString(
+                "names",
+                names.entries.filter { it.key in numbers }
+                    .joinToString("\n") { "${it.key}|${it.value.replace('|', ' ').replace('\n', ' ')}" },
+            )
+            .putString(
+                "overrides",
+                overrides.entries.filter { it.key in numbers }.joinToString("\n") {
+                    "${it.key}|${it.value.calls ?: ""}|${it.value.hangUp ?: ""}|${it.value.gap ?: ""}"
+                },
+            )
             .putInt("calls", calls).putInt("gap", gapSec).putInt("dur", durSec)
             .putBoolean("limitOn", limitOn).putBoolean("skip", skipAnswered)
             .putBoolean("speaker", speakerOn).putBoolean("mute", muteOn)
-            .putInt("simSlot", simSlot).putInt("order", order.ordinal)
+            .putInt("simSlot", simSlot).putInt("order", order.ordinal).putInt("bubbleLook", bubbleLook)
             .apply()
     }
 }
@@ -361,32 +458,63 @@ private fun RedialScreen() {
     val running by runningFlow.collectAsState(initial = isRunning(RedialService.status.value))
 
     val refresh = permTick + resumeTick
-    val sims = remember(refresh) { listSims(ctx) }
+    val sims by produceState(emptyList<SimOption>(), refresh) {
+        value = withContext(Dispatchers.IO) { runCatching { listSims(ctx) }.getOrDefault(emptyList()) }
+    }
     val granted = remember(refresh) { allGranted(ctx) }
 
     // Settings are remembered between runs.
     LaunchedEffect(
         cfg.calls, cfg.gapSec, cfg.limitOn, cfg.durSec, cfg.skipAnswered,
-        cfg.speakerOn, cfg.muteOn, cfg.simSlot, cfg.order,
+        cfg.speakerOn, cfg.muteOn, cfg.simSlot, cfg.order, cfg.bubbleLook,
     ) { cfg.save() }
+
+    var showLog by remember { mutableStateOf(false) }
+    var editIndex by remember { mutableStateOf<Int?>(null) }
+    var wantLog by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permTick++
+        // The call log button asked for access: open the picker as soon as it is granted.
+        if (wantLog && ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALL_LOG) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            showLog = true
+        }
+        wantLog = false
     }
     val contactPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val uri = res.data?.data
         if (uri != null) {
             runCatching {
                 ctx.contentResolver.query(
-                    uri, arrayOf(ContactsContract.CommonDataKinds.Phone.NUMBER), null, null, null,
+                    uri,
+                    arrayOf(
+                        ContactsContract.CommonDataKinds.Phone.NUMBER,
+                        ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ),
+                    null, null, null,
                 )?.use { c ->
                     if (c.moveToFirst()) {
-                        addNumbers(cfg.numbers, c.getString(0).orEmpty())
+                        val added = addNumbers(cfg.numbers, c.getString(0).orEmpty())
+                        val name = c.getString(1).orEmpty()
+                        if (name.isNotBlank()) added.forEach { cfg.names[it] = name }
                         cfg.save()
                         clearFinished()
                     }
                 }
             }
+        }
+    }
+
+    fun openCallLog() {
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALL_LOG) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            showLog = true
+        } else {
+            wantLog = true
+            permLauncher.launch(arrayOf(Manifest.permission.READ_CALL_LOG))
         }
     }
 
@@ -411,9 +539,9 @@ private fun RedialScreen() {
         RedialService.pendingQueue = cfg.numbers.map {
             RedialJob(
                 number = it,
-                attempts = cfg.calls,
-                gapMs = cfg.gapSec * 1000L,
-                hangUpAfterMs = if (cfg.limitOn) cfg.durSec * 1000L else null,
+                attempts = cfg.callsFor(it),
+                gapMs = cfg.gapFor(it) * 1000L,
+                hangUpAfterMs = cfg.hangUpFor(it)?.let { sec -> sec * 1000L },
                 stopOnConnected = cfg.skipAnswered,
                 speaker = cfg.speakerOn,
                 muteMic = cfg.muteOn,
@@ -424,6 +552,38 @@ private fun RedialScreen() {
         ctx.startForegroundService(Intent(ctx, RedialService::class.java).setAction(RedialService.ACTION_START))
     }
 
+    editIndex?.let { i ->
+        val n = cfg.numbers.getOrNull(i)
+        if (n != null) {
+            TargetDialog(
+                number = n, name = cfg.names[n], current = cfg.overrides[n],
+                defCalls = cfg.calls, defHangUp = if (cfg.limitOn) cfg.durSec else null, defGap = cfg.gapSec,
+                onSave = { ov ->
+                    if (ov == null) cfg.overrides.remove(n) else cfg.overrides[n] = ov
+                    cfg.save()
+                    editIndex = null
+                },
+                onDismiss = { editIndex = null },
+            )
+        }
+    }
+
+    if (showLog) {
+        CallLogDialog(
+            queued = cfg.numbers,
+            onDismiss = { showLog = false },
+            onAdd = { picks ->
+                picks.forEach { e ->
+                    cfg.numbers.add(e.number)
+                    if (e.name.isNotBlank()) cfg.names[e.number] = e.name
+                }
+                cfg.save()
+                clearFinished()
+                showLog = false
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize()) {
         Header(running)
         AnimatedContent(
@@ -431,8 +591,8 @@ private fun RedialScreen() {
             modifier = Modifier.weight(1f),
             transitionSpec = {
                 val dir = if (targetState > initialState) 1 else -1
-                (fadeIn(tween(220)) + slideInHorizontally(tween(260)) { dir * it / 8 }) togetherWith
-                    (fadeOut(tween(140)) + slideOutHorizontally(tween(260)) { -dir * it / 8 })
+                (fadeIn(tween(170)) + slideInHorizontally(tween(210)) { dir * it / 10 }) togetherWith
+                    (fadeOut(tween(110)) + slideOutHorizontally(tween(210)) { -dir * it / 10 })
             },
             label = "tabs",
         ) { t ->
@@ -444,6 +604,8 @@ private fun RedialScreen() {
                             Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI),
                         )
                     },
+                    onCallLog = { openCallLog() },
+                    onEdit = { editIndex = it },
                 )
                 1 -> ConfigTab(cfg, running)
                 else -> SystemTab(
@@ -591,12 +753,15 @@ private fun ControlDock(
 
 // ───────────────────────── DIAL tab ─────────────────────────
 @Composable
-private fun DialTab(cfg: Config, sims: List<SimOption>, running: Boolean, onContacts: () -> Unit) {
+private fun DialTab(
+    cfg: Config, sims: List<SimOption>, running: Boolean,
+    onContacts: () -> Unit, onCallLog: () -> Unit, onEdit: (Int) -> Unit,
+) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        HeroPanel(jobCount = cfg.numbers.size, callsEach = cfg.calls)
+        HeroPanel(jobCount = cfg.numbers.size, totalCalls = cfg.numbers.sumOf { cfg.callsFor(it) }, names = cfg.names)
 
         GlassCard {
             SectionTitle("TARGETS")
@@ -604,6 +769,7 @@ private fun DialTab(cfg: Config, sims: List<SimOption>, running: Boolean, onCont
                 enabled = !running,
                 onAdd = { addNumbers(cfg.numbers, it); cfg.save(); clearFinished() },
                 onContacts = onContacts,
+                onCallLog = onCallLog,
             )
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -622,8 +788,12 @@ private fun DialTab(cfg: Config, sims: List<SimOption>, running: Boolean, onCont
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             }
+            if (!running && cfg.numbers.isNotEmpty()) {
+                Caption("Tap a number to give it its own calls, hang-up or interval.")
+            }
             QueueList(
-                numbers = cfg.numbers, callsEach = cfg.calls, canRemove = !running,
+                numbers = cfg.numbers, names = cfg.names, cfg = cfg, canEdit = !running,
+                onEdit = onEdit,
                 onRemove = { cfg.numbers.removeAt(it); cfg.save(); clearFinished() },
             )
         }
@@ -658,19 +828,25 @@ private fun DialTab(cfg: Config, sims: List<SimOption>, running: Boolean, onCont
             Hairline()
             Spacer(Modifier.height(12.dp))
 
-            val total = cfg.numbers.size * cfg.calls
+            val total = cfg.numbers.sumOf { cfg.callsFor(it) }
+            val customCount = cfg.numbers.count { cfg.overrides[it] != null }
             if (cfg.numbers.isEmpty()) {
                 Text("Add at least one target to begin.", fontFamily = Mono, fontSize = 12.sp, color = Dim)
             } else {
                 Text(
-                    "${cfg.numbers.size} TARGETS × ${cfg.calls} CALLS = $total CALLS",
+                    "${cfg.numbers.size} TARGETS · $total CALLS" +
+                        (if (customCount > 0) " · $customCount CUSTOM" else ""),
                     fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp, color = Color.White,
                 )
+                val allLimited = cfg.numbers.all { cfg.hangUpFor(it) != null }
                 val timing = buildString {
-                    if (cfg.limitOn) append("${cfg.durSec}s hang-up · ")
-                    append("${cfg.gapSec}s gap")
-                    if (cfg.limitOn) {
-                        append(" · up to ~${spanText(total.toLong() * (cfg.durSec + cfg.gapSec))}")
+                    append(if (cfg.limitOn) "${cfg.durSec}s hang-up" else "no hang-up limit")
+                    append(" · ${cfg.gapSec}s gap")
+                    if (allLimited) {
+                        val secs = cfg.numbers.sumOf { n ->
+                            cfg.callsFor(n).toLong() * ((cfg.hangUpFor(n) ?: 0) + cfg.gapFor(n))
+                        }
+                        append(" · up to ~${spanText(secs)}")
                     }
                 }
                 Spacer(Modifier.height(4.dp))
@@ -682,7 +858,7 @@ private fun DialTab(cfg: Config, sims: List<SimOption>, running: Boolean, onCont
 }
 
 @Composable
-private fun HeroPanel(jobCount: Int, callsEach: Int) {
+private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>) {
     val ctx = LocalContext.current
     val status by RedialService.status.collectAsState()
     val paused by RedialService.paused.collectAsState()
@@ -698,12 +874,17 @@ private fun HeroPanel(jobCount: Int, callsEach: Int) {
     }
     val animated = animateFloatAsState(targetValue = fraction, animationSpec = tween(700), label = "ring")
 
-    val glow = rememberInfiniteTransition(label = "glow").animateFloat(
-        initialValue = 0.15f,
-        targetValue = 0.5f,
-        animationSpec = infiniteRepeatable(animation = tween(1400), repeatMode = RepeatMode.Reverse),
-        label = "glowAlpha",
-    )
+    // The glow only animates while a run is active, so an idle screen costs nothing.
+    val glow: State<Float> = if (running) {
+        rememberInfiniteTransition(label = "glow").animateFloat(
+            initialValue = 0.15f,
+            targetValue = 0.5f,
+            animationSpec = infiniteRepeatable(animation = tween(1400), repeatMode = RepeatMode.Reverse),
+            label = "glowAlpha",
+        )
+    } else {
+        remember { mutableStateOf(0f) }
+    }
 
     val label = when (status) {
         is EngineState.Dialing -> "DIALING"
@@ -759,6 +940,10 @@ private fun HeroPanel(jobCount: Int, callsEach: Int) {
             Spacer(Modifier.height(12.dp))
             if (p != null) {
                 Text(p.number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                val who = names[p.number]
+                if (who != null) {
+                    Text(who, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Cyan, maxLines = 1)
+                }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     "CALL ${p.step}/${p.steps} · THIS NUMBER ${p.attempt}/${p.total}",
@@ -771,7 +956,7 @@ private fun HeroPanel(jobCount: Int, callsEach: Int) {
                 )
             } else {
                 Text(
-                    "$jobCount TARGETS · $callsEach CALLS EACH",
+                    "$jobCount TARGETS · $totalCalls CALLS",
                     fontFamily = Mono, fontSize = 12.sp, letterSpacing = 2.sp, color = Dim,
                 )
             }
@@ -850,36 +1035,48 @@ private fun CooldownText(untilMs: Long) {
 
 // ───────────────────────── Queue ─────────────────────────
 @Composable
-private fun AddNumberRow(enabled: Boolean, onAdd: (String) -> Unit, onContacts: () -> Unit) {
+private fun AddNumberRow(
+    enabled: Boolean,
+    onAdd: (String) -> Unit,
+    onContacts: () -> Unit,
+    onCallLog: () -> Unit,
+) {
     // Keystrokes only recompose this row, not the whole screen. Saved so tab switches keep the text.
     var input by rememberSaveable { mutableStateOf("") }
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedTextField(
-            value = input,
-            onValueChange = { input = it },
-            label = { Text("Number(s), comma separated") },
-            singleLine = false,
-            maxLines = 3,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            enabled = enabled,
-            colors = fieldColors(),
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(10.dp))
+    OutlinedTextField(
+        value = input,
+        onValueChange = { input = it },
+        label = { Text("Number(s), comma separated") },
+        singleLine = false,
+        maxLines = 3,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+        enabled = enabled,
+        colors = fieldColors(),
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(10.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        NeonButton(
+            "ADD", enabled = enabled && input.isNotBlank(),
+            modifier = Modifier.weight(0.8f),
+            icon = { Glyph(Icons.Filled.Add, it, 18.dp) },
+        ) {
+            onAdd(input)
+            input = ""
+        }
         GhostButton(
-            "CONTACTS", enabled = enabled, modifier = Modifier.width(120.dp).height(56.dp),
+            "CONTACTS", enabled = enabled,
+            modifier = Modifier.weight(1.1f).height(48.dp),
             icon = { Glyph(Icons.Filled.Person, it, 16.dp) },
             onClick = onContacts,
         )
-    }
-    Spacer(Modifier.height(10.dp))
-    NeonButton(
-        "ADD TO QUEUE", enabled = enabled && input.isNotBlank(),
-        icon = { Glyph(Icons.Filled.Add, it, 20.dp) },
-    ) {
-        onAdd(input)
-        input = ""
+        GhostButton(
+            "CALL LOG", enabled = enabled,
+            modifier = Modifier.weight(1.1f).height(48.dp),
+            icon = { Glyph(Icons.Filled.Call, it, 16.dp) },
+            onClick = onCallLog,
+        )
     }
 }
 
@@ -898,45 +1095,60 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-private fun QueueList(numbers: List<String>, callsEach: Int, canRemove: Boolean, onRemove: (Int) -> Unit) {
+private fun QueueList(
+    numbers: List<String>, names: Map<String, String>, cfg: Config,
+    canEdit: Boolean, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit,
+) {
     val status by RedialService.status.collectAsState()
     val finished = status is EngineState.Finished
     val p = status.progress()
-    numbers.forEachIndexed { i, n ->
-        val completed = p?.completed?.getOrNull(i) ?: 0
-        // 0 = queued, 1 = current, 2 = done
-        val state = when {
-            finished -> 2
-            p == null -> 0
-            completed >= callsEach -> 2
-            i == p.jobIndex -> 1
-            else -> 0
-        }
-        // New rows ease in.
-        val visible = remember { MutableTransitionState(false).apply { targetState = true } }
-        AnimatedVisibility(
-            visibleState = visible,
-            enter = fadeIn(tween(250)) + expandVertically(tween(250)),
-        ) {
-            QueueItem(
-                index = i, number = n, state = state,
-                doneCount = if (finished) callsEach else completed, total = callsEach,
-                canRemove = canRemove, onRemove = { onRemove(i) },
-            )
+    val listState = rememberLazyListState()
+
+    // Keep the number being dialled in view during a run.
+    val currentIndex = p?.jobIndex
+    LaunchedEffect(currentIndex) {
+        if (currentIndex != null && currentIndex in numbers.indices) listState.animateScrollToItem(currentIndex)
+    }
+
+    LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)) {
+        itemsIndexed(numbers) { i, n ->
+            val completed = p?.completed?.getOrNull(i) ?: 0
+            val callsEach = cfg.callsFor(n)
+            // 0 = queued, 1 = current, 2 = done
+            val state = when {
+                finished -> 2
+                p == null -> 0
+                completed >= callsEach -> 2
+                i == p.jobIndex -> 1
+                else -> 0
+            }
+            // New rows ease in.
+            val visible = remember { MutableTransitionState(false).apply { targetState = true } }
+            AnimatedVisibility(
+                visibleState = visible,
+                enter = fadeIn(tween(250)) + expandVertically(tween(250)),
+            ) {
+                QueueItem(
+                    index = i, number = n, name = names[n], custom = cfg.customSummary(n), state = state,
+                    doneCount = if (finished) callsEach else completed, total = callsEach,
+                    canRemove = canEdit, onEdit = { onEdit(i) }, onRemove = { onRemove(i) },
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun QueueItem(
-    index: Int, number: String, state: Int, doneCount: Int, total: Int,
-    canRemove: Boolean, onRemove: () -> Unit,
+    index: Int, number: String, name: String?, custom: String?, state: Int, doneCount: Int, total: Int,
+    canRemove: Boolean, onEdit: () -> Unit, onRemove: () -> Unit,
 ) {
     val current = state == 1
     val done = state == 2
     val shape = RoundedCornerShape(12.dp)
     Column(
         Modifier
+            .pressable(enabled = canRemove, onClick = onEdit)
             .fillMaxWidth()
             .padding(vertical = 3.dp)
             .clip(shape)
@@ -955,11 +1167,21 @@ private fun QueueItem(
                     )
                 }
             }
-            Text(
-                number, fontFamily = Mono, fontSize = 17.sp,
-                color = if (done) Dim else Color.White,
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    number, fontFamily = Mono, fontSize = 17.sp,
+                    color = if (done) Dim else Color.White,
+                )
+                if (name != null) {
+                    Text(name, fontSize = 11.sp, color = if (current) Cyan else Dim, maxLines = 1)
+                }
+                if (custom != null) {
+                    Text(
+                        custom, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 0.5.sp,
+                        color = Color(0xFFB39DFF), maxLines = 1,
+                    )
+                }
+            }
             if (canRemove) {
                 Box(
                     Modifier.size(36.dp).clip(CircleShape).pressable(onClick = onRemove),
@@ -990,6 +1212,7 @@ private fun MiniBar(fraction: Float) {
 // ───────────────────────── CONFIG tab ─────────────────────────
 @Composable
 private fun ConfigTab(cfg: Config, running: Boolean) {
+    val ctx = LocalContext.current
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -1027,6 +1250,28 @@ private fun ConfigTab(cfg: Config, running: Boolean) {
                 "Off by default: some phones log ring time as call time, so this can skip too early.",
                 cfg.skipAnswered, !running,
             ) { cfg.skipAnswered = it }
+        }
+
+        GlassCard {
+            SectionTitle("FLOATING BUBBLE")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("DARK", "LIGHT", "NEON").forEachIndexed { i, label ->
+                    SegChip(label, cfg.bubbleLook == i, true, Modifier.weight(1f)) { cfg.bubbleLook = i }
+                }
+            }
+            Caption("If the bubble looks washed out on your phone, try another look, then preview it.")
+            Spacer(Modifier.height(12.dp))
+            GhostButton(
+                "PREVIEW BUBBLE",
+                icon = { Glyph(Icons.Filled.PlayArrow, it, 16.dp) },
+            ) {
+                if (Settings.canDrawOverlays(ctx)) {
+                    cfg.save()
+                    showBubblePreview(ctx)
+                } else {
+                    Toast.makeText(ctx, "Enable floating control in the SYSTEM tab first", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
         Spacer(Modifier.height(8.dp))
     }
@@ -1412,4 +1657,229 @@ private fun Caption(text: String) {
 @Composable
 private fun Hairline() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Hair))
+}
+
+// ───────────────────────── Call log picker ─────────────────────────
+@Composable
+private fun CallLogDialog(
+    queued: List<String>,
+    onDismiss: () -> Unit,
+    onAdd: (List<RecentCall>) -> Unit,
+) {
+    val ctx = LocalContext.current
+    var entries by remember { mutableStateOf<List<RecentCall>?>(null) }
+    LaunchedEffect(Unit) {
+        entries = withContext(Dispatchers.IO) {
+            runCatching { loadRecentCalls(ctx) }.getOrDefault(emptyList())
+        }
+    }
+    var filter by remember { mutableStateOf(0) }              // 0 all, 1 missed, 2 out, 3 in
+    val picked = remember { mutableStateListOf<String>() }    // RecentCall.key values
+    val queuedKeys = remember(queued.size) {
+        queued.map { n -> n.filter { it.isDigit() }.takeLast(9) }.toSet()
+    }
+
+    val all = entries
+    val shown = (all ?: emptyList()).filter {
+        when (filter) {
+            1 -> it.type == CallLog.Calls.MISSED_TYPE
+            2 -> it.type == CallLog.Calls.OUTGOING_TYPE
+            3 -> it.type == CallLog.Calls.INCOMING_TYPE
+            else -> true
+        }
+    }
+    val selectable = shown.filter { it.key !in queuedKeys }
+    val allPicked = selectable.isNotEmpty() && selectable.all { it.key in picked }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.82f),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) { SectionTitle("RECENT CALLS") }
+                    if (selectable.isNotEmpty()) {
+                        LinkButton(if (allPicked) "CLEAR" else "SELECT ALL") {
+                            if (allPicked) {
+                                selectable.forEach { picked.remove(it.key) }
+                            } else {
+                                selectable.forEach { if (it.key !in picked) picked.add(it.key) }
+                            }
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("ALL", "MISSED", "OUT", "IN").forEachIndexed { i, label ->
+                        SegChip(label, filter == i, true, Modifier.weight(1f)) { filter = i }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        all == null ->
+                            Text("Loading…", fontFamily = Mono, fontSize = 13.sp, color = Dim)
+                        shown.isEmpty() ->
+                            Text("No calls to show.", fontFamily = Mono, fontSize = 13.sp, color = Dim)
+                        else -> LazyColumn(Modifier.fillMaxSize()) {
+                            items(shown, key = { it.key }) { e ->
+                                CallLogRow(e, e.key in picked, e.key in queuedKeys) {
+                                    if (e.key in picked) picked.remove(e.key) else picked.add(e.key)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GhostButton("CANCEL", modifier = Modifier.weight(1f).height(48.dp), onClick = onDismiss)
+                    NeonButton(
+                        "ADD ${picked.size}", enabled = picked.isNotEmpty(),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        onAdd((all ?: emptyList()).filter { it.key in picked })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallLogRow(e: RecentCall, selected: Boolean, queued: Boolean, onToggle: () -> Unit) {
+    val hasName = e.name.isNotBlank()
+    Row(
+        Modifier.fillMaxWidth().pressable(enabled = !queued, onClick = onToggle)
+            .padding(vertical = 9.dp, horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CheckMark(selected, queued)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                if (hasName) e.name else e.number,
+                fontFamily = if (hasName) Display else Mono, fontWeight = FontWeight.Medium,
+                fontSize = 14.sp, color = if (queued) Dim else Color.White, maxLines = 1,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(typeLabel(e.type), fontFamily = Mono, fontSize = 11.sp, color = typeColor(e.type))
+                val rest = (if (hasName) "  ·  ${e.number}" else "") +
+                    "  ·  ${ago(e.date)}" + (if (e.count > 1) "  ·  ×${e.count}" else "")
+                Text(rest, fontFamily = Mono, fontSize = 11.sp, color = Dim, maxLines = 1)
+            }
+        }
+        if (queued) {
+            Text("QUEUED", fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.sp, color = Mint)
+        }
+    }
+}
+
+@Composable
+private fun CheckMark(selected: Boolean, disabled: Boolean) {
+    val shape = RoundedCornerShape(6.dp)
+    Box(
+        Modifier
+            .size(22.dp)
+            .clip(shape)
+            .background(if (selected) Cyan else Color.Transparent)
+            .border(1.5.dp, if (selected) Cyan else if (disabled) Hair else Dim, shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Glyph(Icons.Filled.Check, Ink, 16.dp)
+    }
+}
+
+// ───────────────────────── Per-number settings ─────────────────────────
+@Composable
+private fun TargetDialog(
+    number: String,
+    name: String?,
+    current: NumOverride?,
+    defCalls: Int,
+    defHangUp: Int?,
+    defGap: Int,
+    onSave: (NumOverride?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var callsOn by remember { mutableStateOf(current?.calls != null) }
+    var calls by remember { mutableStateOf(current?.calls ?: defCalls) }
+    // 0 = follow default, 1 = custom seconds, 2 = no limit
+    var hangMode by remember {
+        mutableStateOf(
+            when (current?.hangUp) {
+                null -> 0
+                0 -> 2
+                else -> 1
+            },
+        )
+    }
+    var hang by remember { mutableStateOf(current?.hangUp?.takeIf { it > 0 } ?: (defHangUp ?: 30)) }
+    var gapOn by remember { mutableStateOf(current?.gap != null) }
+    var gap by remember { mutableStateOf(current?.gap ?: defGap) }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 600.dp),
+        ) {
+            Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                SectionTitle("TARGET SETTINGS")
+                Text(number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                if (name != null) {
+                    Text(name, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Cyan)
+                }
+                Caption("Anything left on default follows the CONFIG tab.")
+                Spacer(Modifier.height(12.dp))
+                Hairline()
+
+                ToggleRow("Custom call count", "Default: $defCalls", callsOn, true) { callsOn = it }
+                if (callsOn) {
+                    StepperRow("Calls", calls, 1..500, true, { "$it" }) { calls = it }
+                }
+                Hairline()
+
+                Spacer(Modifier.height(12.dp))
+                FieldLabel("HANG UP AFTER")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SegChip("DEFAULT", hangMode == 0, true, Modifier.weight(1f)) { hangMode = 0 }
+                    SegChip("CUSTOM", hangMode == 1, true, Modifier.weight(1f)) { hangMode = 1 }
+                    SegChip("NO LIMIT", hangMode == 2, true, Modifier.weight(1f)) { hangMode = 2 }
+                }
+                Caption("Default: " + (defHangUp?.let { "${it}s" } ?: "no limit"))
+                if (hangMode == 1) {
+                    StepperRow("Hang up after", hang, 5..600, true, { "${it / 60}m ${it % 60}s" }) { hang = it }
+                }
+                Spacer(Modifier.height(8.dp))
+                Hairline()
+
+                ToggleRow("Custom interval", "Default: ${defGap}s between calls", gapOn, true) { gapOn = it }
+                if (gapOn) {
+                    StepperRow("Interval", gap, 1..300, true, { "${it}s" }) { gap = it }
+                }
+
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GhostButton("RESET", modifier = Modifier.weight(1f).height(48.dp)) { onSave(null) }
+                    NeonButton("SAVE", modifier = Modifier.weight(1f)) {
+                        val ov = NumOverride(
+                            calls = if (callsOn) calls else null,
+                            hangUp = when (hangMode) {
+                                1 -> hang
+                                2 -> 0
+                                else -> null
+                            },
+                            gap = if (gapOn) gap else null,
+                        )
+                        onSave(if (ov.calls == null && ov.hangUp == null && ov.gap == null) null else ov)
+                    }
+                }
+            }
+        }
+    }
 }
