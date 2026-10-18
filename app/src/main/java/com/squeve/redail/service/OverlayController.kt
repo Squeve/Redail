@@ -572,10 +572,10 @@ fun showBubblePreview(context: Context) {
     if (!Settings.canDrawOverlays(context)) return
     val app = context.applicationContext
     val wm = app.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    val look = app.getSharedPreferences("redail", Context.MODE_PRIVATE).getInt("bubbleLook", 0)
+    val chosen = app.getSharedPreferences("redail", Context.MODE_PRIVATE).getInt("bubbleLook", 0)
     val density = app.resources.displayMetrics.density
     val view = BubbleView(app).apply {
-        this.look = look
+        look = chosen
         update(0.42f, "0:18", "HANG UP", Color.parseColor("#00E5FF"))
     }
     val params = WindowManager.LayoutParams(
