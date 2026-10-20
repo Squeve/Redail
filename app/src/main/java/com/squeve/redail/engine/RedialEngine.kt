@@ -3,17 +3,25 @@ package com.squeve.redail.engine
 import com.squeve.redail.model.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlin.random.Random
 
 /**
  * One call at a time. The next call is never placed until the phone line is idle again.
  * Order is decided up front (one by one, round robin or shuffled).
  */
 class RedialEngine(
-    private val dialer: Dialer,
+    private val dialers: List<Dialer>,
     private val phoneBusy: StateFlow<Boolean>,
+    private val phoneRinging: StateFlow<Boolean>,
     private val callLog: CallLogReader,
     private val audio: AudioControl = NoAudio,
     private val onResult: suspend (AttemptResult) -> Unit = {},
+    private val onEvent: (String) -> Unit = {},
+    private val onCheckpoint: (List<Int>) -> Unit = {},
+    private val gate: () -> Gate = { Gate.Go },
+    private val simMode: Int = 0,                // 0 fixed SIM, 1 fall back to the next SIM, 2 alternate every call
+    private val answeredAfterSec: Int = 5,       // a call this long (per the call log) counts as answered
+    private val dryRun: Boolean = false,         // simulate: no real calls
     private val startTimeoutMs: Long = 10_000,   // max wait for a placed call to actually begin
     private val settleTimeoutMs: Long = 8_000,   // max wait for the line to free up after hang up
     private val postCallPauseMs: Long = 800,     // let the telephony stack settle between calls
@@ -24,10 +32,19 @@ class RedialEngine(
     private val pausedFlow = MutableStateFlow(false)
     val isPaused: StateFlow<Boolean> = pausedFlow.asStateFlow()
 
+    /** Why the engine is waiting (quiet hours, airplane mode, ...). null when it is not. */
+    private val waitFlow = MutableStateFlow<String?>(null)
+    val waiting: StateFlow<String?> = waitFlow.asStateFlow()
+
+    /** Set when the run ended early on purpose (for example the daily cap). */
+    @Volatile var stopReason: String? = null
+        private set
+
     /** When the auto hang-up fires for the call in progress. null = timer off. */
     private val hangUpAt = MutableStateFlow<Long?>(null)
     @Volatile private var currentLimit: Long? = null
     @Volatile private var inCallNow = false
+    @Volatile private var callCounter = 0
 
     private var runJob: Job? = null
     val isRunning: Boolean get() = runJob?.isActive == true
@@ -35,6 +52,7 @@ class RedialEngine(
     fun start(scope: CoroutineScope, queue: List<RedialJob>, order: CallOrder = CallOrder.SEQUENTIAL) {
         if (isRunning || queue.isEmpty()) return
         pausedFlow.value = false
+        stopReason = null
         runJob = scope.launch { run(queue, order) }
     }
 
@@ -56,9 +74,10 @@ class RedialEngine(
         runJob?.cancel()
         runJob = null
         pausedFlow.value = false
+        waitFlow.value = null
         hangUpAt.value = null
         inCallNow = false
-        dialer.hangUp()
+        if (!dryRun) dialers.first().hangUp()
         audio.restore()
         _state.value = EngineState.Idle
     }
@@ -108,6 +127,11 @@ class RedialEngine(
         }
     }
 
+    private fun pickGap(job: RedialJob): Long {
+        val max = job.gapMaxMs
+        return if (max != null && max > job.gapMs) Random.nextLong(job.gapMs, max + 1) else job.gapMs
+    }
+
     // ───────────── main loop ─────────────
     private suspend fun run(queue: List<RedialJob>, order: CallOrder) {
         val results = mutableListOf<AttemptResult>()
@@ -122,6 +146,7 @@ class RedialEngine(
                 attemptNo[s] = counter[ji]
             }
             val done = IntArray(queue.size)
+            val answered = IntArray(queue.size)
             val skipped = BooleanArray(queue.size)
 
             fun progressAt(s: Int): Progress {
@@ -142,6 +167,12 @@ class RedialEngine(
                 first = false
 
                 awaitNotPaused()
+                val why = awaitGate()
+                if (why != null) {
+                    stopReason = why
+                    onEvent("Stopped: $why")
+                    break
+                }
                 waitUntilIdle()
 
                 val r = dialOnce(job, progressAt(s))
@@ -149,14 +180,19 @@ class RedialEngine(
                 onResult(r)
 
                 done[ji]++
-                lastGap = job.gapMs
-                if (r.outcome == AttemptOutcome.CONNECTED && job.stopOnConnected) {
+                if (r.outcome == AttemptOutcome.CONNECTED) answered[ji]++
+                lastGap = pickGap(job)
+                if (job.stopOnConnected && answered[ji] >= job.stopAfterAnswers) {
                     skipped[ji] = true
                     done[ji] = job.attempts
+                    onEvent("${job.number}: answered, skipping its remaining calls")
                 }
+                onCheckpoint(done.toList())
             }
 
             pausedFlow.value = false
+            waitFlow.value = null
+            onEvent("Run finished · ${results.size} calls")
             _state.value = EngineState.Finished(results)
         } catch (e: CancellationException) {
             _state.value = EngineState.Idle
@@ -164,19 +200,42 @@ class RedialEngine(
         }
     }
 
-    private suspend fun dialOnce(job: RedialJob, p: Progress): AttemptResult {
-        val startedAt = System.currentTimeMillis()
-        _state.value = EngineState.Dialing(p)
-
-        if (!dialer.place(job.number, job.speaker)) return failed(job, p)
-
-        // Wait for the call to really begin (line goes busy).
-        val started = withTimeoutOrNull(startTimeoutMs) { phoneBusy.first { it } } != null
-        if (!started) {
-            dialer.hangUp()
-            awaitLineFree()
-            return failed(job, p)
+    private fun pickDialers(): List<Dialer> {
+        val n = dialers.size
+        return when {
+            n <= 1 -> dialers
+            simMode == 2 -> listOf(dialers[callCounter % n])
+            simMode == 1 -> dialers
+            else -> listOf(dialers[0])
         }
+    }
+
+    private suspend fun dialOnce(job: RedialJob, p: Progress): AttemptResult {
+        if (dryRun) return dryCall(job, p)
+        val startedAt = System.currentTimeMillis()
+
+        var used: Dialer? = null
+        for (d in pickDialers()) {
+            _state.value = EngineState.Dialing(p)
+            val simNote = if (dialers.size > 1 && d.slot >= 0) " · SIM ${d.slot + 1}" else ""
+            onEvent("Dialing ${job.number} · call ${p.step}/${p.steps}$simNote")
+            if (!d.place(job.number, job.speaker)) {
+                onEvent("Could not place the call")
+                continue
+            }
+            // Wait for the call to really begin (line goes busy).
+            val started = withTimeoutOrNull(startTimeoutMs) { phoneBusy.first { it } } != null
+            if (started) {
+                used = d
+                break
+            }
+            onEvent("The call did not start")
+            d.hangUp()
+            awaitLineFree()
+        }
+        callCounter++
+        if (used == null) return failed(job, p, -1)
+        val dialer = used
 
         val limit = job.hangUpAfterMs
         currentLimit = limit
@@ -218,7 +277,10 @@ class RedialEngine(
             ended
         }
 
-        if (!endedByItself) dialer.hangUp()
+        if (!endedByItself) {
+            onEvent("Hanging up (time limit)")
+            dialer.hangUp()
+        }
         hangUpAt.value = null
         currentLimit = null
         inCallNow = false
@@ -229,22 +291,64 @@ class RedialEngine(
         audio.restore()
         delay(postCallPauseMs)
 
-        var duration = 0L
-        val outcome = if (job.stopOnConnected) {
-            duration = withContext(Dispatchers.IO) { callLog.lastOutgoingDurationSec(job.number, startedAt) }
-            if (duration > 0) AttemptOutcome.CONNECTED else AttemptOutcome.NO_ANSWER
-        } else {
-            AttemptOutcome.COMPLETED
-        }
-        return AttemptResult(job.number, p.attempt, outcome, duration)
+        // The call log is the only hint Android gives about whether anyone picked up.
+        val duration = withContext(Dispatchers.IO) { callLog.lastOutgoingDurationSec(job.number, startedAt) }
+        val outcome = if (duration >= answeredAfterSec) AttemptOutcome.CONNECTED else AttemptOutcome.NO_ANSWER
+        onEvent("Ended · ${duration}s · " + if (outcome == AttemptOutcome.CONNECTED) "answered" else "no answer")
+        return AttemptResult(job.number, p.attempt, outcome, duration, simSlot = dialer.slot)
     }
 
-    private fun failed(job: RedialJob, p: Progress) =
-        AttemptResult(job.number, p.attempt, AttemptOutcome.FAILED_TO_START)
+    /** Pretend call: walks the same states and timing logic without touching the phone. */
+    private suspend fun dryCall(job: RedialJob, p: Progress): AttemptResult {
+        _state.value = EngineState.Dialing(p)
+        onEvent("DRY · dialing ${job.number} · call ${p.step}/${p.steps}")
+        delay(350)
+        val limit = job.hangUpAfterMs
+        _state.value = EngineState.InCall(p, limit?.let { System.currentTimeMillis() + 700 }, limit != null)
+        delay(700)
+        onEvent("DRY · ended")
+        return AttemptResult(job.number, p.attempt, AttemptOutcome.COMPLETED, 0, simSlot = -1)
+    }
 
-    /** Before dialing: if some other call is active, wait for it. Never hang up a call we didn't place. */
+    private fun failed(job: RedialJob, p: Progress, slot: Int) =
+        AttemptResult(job.number, p.attempt, AttemptOutcome.FAILED_TO_START, simSlot = slot)
+
+    /** Waits while the gate says wait. Returns a reason when the run should end, otherwise null. */
+    private suspend fun awaitGate(): String? {
+        var shown: String? = null
+        while (true) {
+            when (val g = gate()) {
+                is Gate.Go -> {
+                    if (shown != null) {
+                        waitFlow.value = null
+                        onEvent("Resumed")
+                    }
+                    return null
+                }
+                is Gate.Stop -> {
+                    waitFlow.value = null
+                    return g.reason
+                }
+                is Gate.Wait -> {
+                    if (g.reason != shown) {
+                        shown = g.reason
+                        waitFlow.value = g.reason
+                        onEvent("Waiting: ${g.reason}")
+                    }
+                    if (_state.value !is EngineState.Paused) _state.value = EngineState.Paused(_state.value)
+                    delay(3_000)
+                }
+            }
+        }
+    }
+
+    /** Before dialing: if you are on another call (or one is ringing), wait. We never hang up calls we didn't place. */
     private suspend fun waitUntilIdle() {
-        if (phoneBusy.value) phoneBusy.first { !it }
+        if (dryRun) return
+        if (phoneBusy.value || phoneRinging.value) {
+            onEvent("Waiting for your other call to finish")
+            combine(phoneBusy, phoneRinging) { a, b -> a || b }.first { !it }
+        }
     }
 
     /** After we hung up: make sure the line really is free, nudging endCall() once more if needed. */
@@ -252,18 +356,22 @@ class RedialEngine(
         if (!phoneBusy.value) return
         val freed = withTimeoutOrNull(settleTimeoutMs) { phoneBusy.first { !it } } != null
         if (!freed) {
-            dialer.hangUp()
+            dialers.first().hangUp()
             withTimeoutOrNull(settleTimeoutMs) { phoneBusy.first { !it } }
         }
     }
 
     private suspend fun cooldown(next: Progress, gapMs: Long) {
-        _state.value = EngineState.Cooldown(next, System.currentTimeMillis() + gapMs)
-        var remaining = gapMs
+        val wait = if (dryRun) minOf(gapMs, 500L) else gapMs
+        if (gapMs >= 2_000) onEvent("Next call in ${gapMs / 1000}s")
+        _state.value = EngineState.Cooldown(next, System.currentTimeMillis() + wait)
+        var remaining = wait
         while (remaining > 0) {
             if (pausedFlow.value) {
                 _state.value = EngineState.Paused(_state.value)
+                onEvent("Paused")
                 pausedFlow.first { !it }
+                onEvent("Resumed")
                 _state.value = EngineState.Cooldown(next, System.currentTimeMillis() + remaining)
             }
             val step = minOf(250L, remaining)
@@ -276,7 +384,9 @@ class RedialEngine(
         if (pausedFlow.value) {
             val before = _state.value
             _state.value = EngineState.Paused(before)
+            onEvent("Paused")
             pausedFlow.first { !it }
+            onEvent("Resumed")
             _state.value = before
         }
     }

@@ -66,6 +66,8 @@ class TelecomDialer(
     private val ctx: Context,
     private val sim: SimOption?,
 ) : Dialer {
+    override val slot: Int get() = sim?.slot ?: -1
+
     private val telecom get() = ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager
 
     @SuppressLint("MissingPermission")
@@ -128,6 +130,9 @@ object PhoneStateMonitor {
     private val _offhook = MutableStateFlow(false)
     val offhook: StateFlow<Boolean> = _offhook.asStateFlow()
 
+    private val _ringing = MutableStateFlow(false)
+    val ringing: StateFlow<Boolean> = _ringing.asStateFlow()
+
     private var registered = false
     private var keepAlive: Any? = null
 
@@ -142,6 +147,7 @@ object PhoneStateMonitor {
                 val cb = object : TelephonyCallback(), TelephonyCallback.CallStateListener {
                     override fun onCallStateChanged(state: Int) {
                         _offhook.value = state == TelephonyManager.CALL_STATE_OFFHOOK
+                        _ringing.value = state == TelephonyManager.CALL_STATE_RINGING
                     }
                 }
                 tm.registerTelephonyCallback(app.mainExecutor, cb)
@@ -152,6 +158,7 @@ object PhoneStateMonitor {
                     @Deprecated("Deprecated in Java")
                     override fun onCallStateChanged(state: Int, phoneNumber: String?) {
                         _offhook.value = state == TelephonyManager.CALL_STATE_OFFHOOK
+                        _ringing.value = state == TelephonyManager.CALL_STATE_RINGING
                     }
                 }
                 @Suppress("DEPRECATION")
@@ -166,7 +173,7 @@ object PhoneStateMonitor {
 class CallLogDurationReader(private val ctx: Context) : CallLogReader {
     @SuppressLint("MissingPermission")
     override fun lastOutgoingDurationSec(number: String, sinceMs: Long): Long {
-        repeat(5) {
+        repeat(4) {
             ctx.contentResolver.query(
                 CallLog.Calls.CONTENT_URI,
                 arrayOf(CallLog.Calls.DURATION, CallLog.Calls.NUMBER),
@@ -179,7 +186,7 @@ class CallLogDurationReader(private val ctx: Context) : CallLogReader {
                     if (c.getString(1).orEmpty().filter { it.isDigit() }.endsWith(digits)) return c.getLong(0)
                 }
             }
-            Thread.sleep(400)
+            Thread.sleep(300)
         }
         return 0
     }

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sc_start_short">Start last run</string>
+    <string name="sc_start_long">Start the last run again</string>
+    <string name="sc_stop_short">Stop</string>
+    <string name="sc_stop_long">Stop redialing</string>
+</resources>

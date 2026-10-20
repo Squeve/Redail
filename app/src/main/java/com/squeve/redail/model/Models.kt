@@ -12,10 +12,20 @@ data class RedialJob(
     val number: String,
     val attempts: Int = 5,                    // number of calls to this number
     val gapMs: Long = 5_000,                  // interval between calls
+    val gapMaxMs: Long? = null,               // when set, the interval is random between gapMs and gapMaxMs
     val hangUpAfterMs: Long? = 30_000,        // call duration; null = let the call run
-    val stopOnConnected: Boolean = false,     // skip to next number once answered
+    val stopOnConnected: Boolean = false,     // skip to the next number once answered
+    val stopAfterAnswers: Int = 1,            // how many answers count as "answered"
     val speaker: Boolean = false,             // start the call on speakerphone
     val muteMic: Boolean = false,             // keep the microphone muted during the call
+)
+
+/** Everything needed to start (or later resume / schedule) a run. */
+data class RunPlan(
+    val jobs: List<RedialJob>,
+    val order: CallOrder = CallOrder.SEQUENTIAL,
+    val simSlot: Int = -1,                    // -1 = phone default
+    val dry: Boolean = false,                 // simulate only, no real calls
 )
 
 enum class AttemptOutcome { COMPLETED, CONNECTED, NO_ANSWER, FAILED_TO_START }
@@ -26,6 +36,7 @@ data class AttemptResult(
     val outcome: AttemptOutcome,
     val durationSec: Long = 0,
     val timestamp: Long = System.currentTimeMillis(),
+    val simSlot: Int = -1,
 )
 
 /**

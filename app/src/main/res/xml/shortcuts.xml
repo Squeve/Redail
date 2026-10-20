@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="start_last"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_call"
+        android:shortcutShortLabel="@string/sc_start_short"
+        android:shortcutLongLabel="@string/sc_start_long">
+        <intent
+            android:action="com.squeve.redail.START_LAST"
+            android:targetPackage="com.squeve.redail"
+            android:targetClass="com.squeve.redail.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="stop_run"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_call"
+        android:shortcutShortLabel="@string/sc_stop_short"
+        android:shortcutLongLabel="@string/sc_stop_long">
+        <intent
+            android:action="com.squeve.redail.STOP_RUN"
+            android:targetPackage="com.squeve.redail"
+            android:targetClass="com.squeve.redail.MainActivity" />
+    </shortcut>
+</shortcuts>
