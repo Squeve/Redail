@@ -13,13 +13,23 @@ Android auto-redial app. Add numbers, choose how calls are ordered, and it dials
 - **After a run:** results summary, history with CSV export, finish alert, resume after an interruption.
 - **Plan ahead:** scheduled starts (survive reboots), saved lists, dry run.
 - **Shortcuts:** long-press app icon, Quick Settings tile and a home screen widget.
-- **Look:** accent colours, pure black, UI size, optional app lock. Settings backup and restore.
+- **Queue:** press and hold the handle to reorder, swipe a row to remove it (with undo).
+- **Look:** accent colours, pure black, UI size, haptics switch, optional app lock. Settings backup and restore.
 
 ## Build the APK on GitHub
 
 1. Push this project to `main`.
 2. Open the **Actions** tab. *Build APK* runs on every push.
 3. Every successful build on `main` is published as a GitHub Release (`build-<number>`); the app updates from it (SYSTEM > Updates).
+
+## Tests
+
+Unit tests live in `app/src/test`. CI runs them on every build (`gradle testDebugUnitTest`) and attaches a `test-report` artifact; a failing test does not block the APK.
+
+## Releases and versions
+
+- Add a section at the top of `CHANGELOG.md` for each release; its text becomes the GitHub release notes and appears in the app before an update is installed.
+- `baseVersion` in `app/build.gradle.kts` is the first two parts of the version name; CI adds the run number (for example 0.15.123).
 
 ## Notes
 

@@ -25,6 +25,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
@@ -42,6 +43,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.LazyColumn
@@ -88,6 +91,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -100,6 +105,7 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
@@ -136,6 +142,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 // ───────────────────────── Palette & type ─────────────────────────
@@ -156,6 +163,7 @@ private object Theming {
     val accent2 = mutableStateOf(ACCENTS[0].second)
     val black = mutableStateOf(false)
     val size = mutableStateOf(1)           // 0 compact, 1 normal, 2 large
+    val haptics = mutableStateOf(true)
 
     fun setAccent(i: Int) {
         val a = ACCENTS[i.coerceIn(0, ACCENTS.size - 1)]
@@ -167,6 +175,7 @@ private object Theming {
         setAccent(prefs.getInt("accent", 0))
         black.value = prefs.getBoolean("black", false)
         size.value = prefs.getInt("uiSize", 1)
+        haptics.value = prefs.getBoolean("haptics", true)
     }
 }
 
@@ -271,7 +280,9 @@ private fun Modifier.pressable(enabled: Boolean = true, strong: Boolean = false,
             scaleY = scale
         }
         .clickable(interactionSource = source, indication = null, enabled = enabled) {
-            haptic.performHapticFeedback(if (strong) HapticFeedbackType.LongPress else HapticFeedbackType.TextHandleMove)
+            if (Theming.haptics.value) {
+                haptic.performHapticFeedback(if (strong) HapticFeedbackType.LongPress else HapticFeedbackType.TextHandleMove)
+            }
             onClick()
         }
 }
@@ -292,19 +303,6 @@ private fun permsToRequest(): Array<String> =
     if (Build.VERSION.SDK_INT >= 33) REQUIRED + Manifest.permission.POST_NOTIFICATIONS else REQUIRED
 
 private class AddResult(val added: List<String>, val invalid: Int, val duplicates: Int)
-
-private fun digitsKey(n: String) = n.filter { it.isDigit() }.takeLast(9)
-
-private fun isValidNumber(n: String): Boolean {
-    val digits = n.count { it.isDigit() }
-    return digits in 3..15
-}
-
-/** Local numbers (one leading 0) get the chosen country code. */
-private fun normalizeNumber(n: String, countryCode: String): String {
-    val cc = countryCode.filter { it.isDigit() }
-    return if (cc.isNotEmpty() && n.startsWith("0") && !n.startsWith("00")) "+" + cc + n.drop(1) else n
-}
 
 /** Adds numbers to the queue, skipping invalid ones and (unless allowed) duplicates. */
 private fun addChecked(cfg: Config, raw: String): AddResult {
@@ -329,16 +327,6 @@ private fun addChecked(cfg: Config, raw: String): AddResult {
     }
     return AddResult(added, invalid, duplicates)
 }
-
-private val PHONE_RE = Regex("""(?<![\w+])\+?\d[\d\s().\-]{5,}\d""")
-
-/** Pulls phone-like numbers out of any text (shared text, clipboard, a CSV file). */
-private fun extractNumbers(text: String): List<String> =
-    PHONE_RE.findAll(text)
-        .map { m -> m.value.filter { it.isDigit() || it == '+' } }
-        .filter { n -> n.count { it.isDigit() } in 7..15 }
-        .distinct()
-        .toList()
 
 private fun reportAdd(ctx: Context, r: AddResult) {
     val parts = mutableListOf("Added ${r.added.size}")
@@ -467,6 +455,8 @@ private fun parseOverride(line: String): Pair<String, NumOverride>? {
     return f[0] to NumOverride(f[1].toIntOrNull(), f[2].toIntOrNull(), f[3].toIntOrNull(), flag(4), flag(5))
 }
 
+private class RemovedEntry(val index: Int, val number: String)
+
 /** All user settings in one place; changes only recompose whatever reads that field. */
 @Stable
 private class Config(private val prefs: SharedPreferences) {
@@ -518,9 +508,31 @@ private class Config(private val prefs: SharedPreferences) {
     var accentIdx by mutableStateOf(prefs.getInt("accent", 0))
     var blackOn by mutableStateOf(prefs.getBoolean("black", false))
     var uiSize by mutableStateOf(prefs.getInt("uiSize", 1))
+    var hapticsOn by mutableStateOf(prefs.getBoolean("haptics", true))
 
     /** Not remembered between launches on purpose: a forgotten dry-run switch must never hide a real run. */
     var dryRun by mutableStateOf(false)
+
+    /** The last number taken out of the queue, kept for a few seconds so it can be put back. */
+    var removed by mutableStateOf<RemovedEntry?>(null)
+
+    fun removeWithUndo(i: Int) {
+        if (i !in numbers.indices) return
+        val n = numbers.removeAt(i)
+        removed = RemovedEntry(i, n)
+    }
+
+    fun undoRemove() {
+        val r = removed ?: return
+        numbers.add(r.index.coerceIn(0, numbers.size), r.number)
+        removed = null
+        save()
+    }
+
+    fun move(from: Int, to: Int) {
+        if (from !in numbers.indices || to !in numbers.indices || from == to) return
+        numbers.add(to, numbers.removeAt(from))
+    }
 
     fun callsFor(n: String): Int = overrides[n]?.calls ?: calls
     fun gapFor(n: String): Int = overrides[n]?.gap ?: gapSec
@@ -568,7 +580,7 @@ private class Config(private val prefs: SharedPreferences) {
     fun fingerprint(): List<Any?> = listOf(
         calls, gapSec, gapRandom, gapMaxSec, limitOn, durSec, skipAnswered, answersToStop, answerSec,
         speakerOn, muteOn, simSlot, simMode, order, bubbleLook, alertOn, dailyCap, quietOn, quietStart,
-        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize,
+        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn,
     )
 
     fun save() {
@@ -596,6 +608,7 @@ private class Config(private val prefs: SharedPreferences) {
             .putString("countryCode", countryCode).putBoolean("allowDup", allowDup)
             .putBoolean("lockOn", lockOn)
             .putInt("accent", accentIdx).putBoolean("black", blackOn).putInt("uiSize", uiSize)
+            .putBoolean("haptics", hapticsOn)
             .apply()
     }
 
@@ -631,6 +644,7 @@ private class Config(private val prefs: SharedPreferences) {
             put("accent", accentIdx)
             put("black", blackOn)
             put("uiSize", uiSize)
+            put("haptics", hapticsOn)
         }
     }
 
@@ -673,6 +687,7 @@ private class Config(private val prefs: SharedPreferences) {
         accentIdx = o.optInt("accent", accentIdx)
         blackOn = o.optBoolean("black", blackOn)
         uiSize = o.optInt("uiSize", uiSize)
+        hapticsOn = o.optBoolean("haptics", hapticsOn)
     }
 }
 
@@ -839,10 +854,11 @@ private fun RedialScreen() {
 
     // Settings are remembered between runs; theme changes are applied as they happen.
     LaunchedEffect(Unit) { snapshotFlow { cfg.fingerprint() }.collect { cfg.save() } }
-    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize) {
+    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize, cfg.hapticsOn) {
         Theming.setAccent(cfg.accentIdx)
         Theming.black.value = cfg.blackOn
         Theming.size.value = cfg.uiSize
+        Theming.haptics.value = cfg.hapticsOn
     }
 
     var showLog by remember { mutableStateOf(false) }
@@ -1131,6 +1147,7 @@ private fun RedialScreen() {
                 }
             }
             if (!imeOpen) {
+                UndoBar(cfg)
                 ControlDock(
                     running = running,
                     startLabel = if (cfg.dryRun) "START DRY RUN" else "START REDIAL",
@@ -1199,23 +1216,18 @@ private fun PulseDot(active: Boolean) {
 
 @Composable
 private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
-    val items = listOf(
-        Icons.Filled.Call to "DIAL",
-        Icons.Filled.DateRange to "LOG",
-        Icons.Filled.Settings to "CONFIG",
-        Icons.Filled.CheckCircle to "SYSTEM",
-    )
+    val items = listOf(0 to "DIAL", 1 to "LOG", 2 to "CONFIG", 3 to "SYSTEM")
     Column(Modifier.fillMaxWidth().background(Dock)) {
         Hairline()
         Row(Modifier.fillMaxWidth()) {
-            items.forEachIndexed { i, (icon, label) ->
+            items.forEachIndexed { i, (kind, label) ->
                 val sel = i == selected
                 val tint by animateColor(if (sel) Cyan else Dim)
                 Column(
                     Modifier.weight(1f).pressable { onSelect(i) }.padding(top = 10.dp, bottom = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Glyph(icon, tint, 22.dp)
+                    TabIcon(kind, tint, 24.dp)
                     Spacer(Modifier.height(3.dp))
                     Text(
                         label, fontFamily = Display, fontSize = 11.sp, letterSpacing = 2.sp,
@@ -1224,6 +1236,49 @@ private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
                     Spacer(Modifier.height(5.dp))
                     Box(Modifier.width(26.dp).height(2.dp).background(if (sel) Cyan else Color.Transparent))
                 }
+            }
+        }
+    }
+}
+
+/** Hand-drawn tab icons: 0 keypad, 1 log lines, 2 sliders, 3 power. */
+@Composable
+private fun TabIcon(kind: Int, tint: Color, dp: Dp = 24.dp) {
+    Canvas(Modifier.size(dp)) {
+        val s = size.minDimension
+        val sw = s * 0.09f
+        when (kind) {
+            0 -> {
+                for (r in 0..3) {
+                    for (c in 0..2) {
+                        drawCircle(tint, radius = s * 0.07f, center = Offset(s * (0.2f + 0.3f * c), s * (0.14f + 0.24f * r)))
+                    }
+                }
+            }
+            1 -> {
+                for (r in 0..2) {
+                    val y = s * (0.25f + 0.25f * r)
+                    drawCircle(tint, radius = s * 0.05f, center = Offset(s * 0.14f, y))
+                    drawLine(tint, Offset(s * 0.32f, y), Offset(s * 0.9f, y), strokeWidth = sw, cap = StrokeCap.Round)
+                }
+            }
+            2 -> {
+                val ys = listOf(0.22f, 0.5f, 0.78f)
+                val xs = listOf(0.65f, 0.3f, 0.55f)
+                for (r in 0..2) {
+                    val y = s * ys[r]
+                    drawLine(tint, Offset(s * 0.1f, y), Offset(s * 0.9f, y), strokeWidth = sw, cap = StrokeCap.Round)
+                    drawCircle(Dock, radius = s * 0.12f, center = Offset(s * xs[r], y))
+                    drawCircle(tint, radius = s * 0.12f, center = Offset(s * xs[r], y), style = Stroke(width = sw))
+                }
+            }
+            else -> {
+                drawArc(
+                    tint, startAngle = -60f, sweepAngle = 300f, useCenter = false,
+                    topLeft = Offset(s * 0.15f, s * 0.2f), size = Size(s * 0.7f, s * 0.7f),
+                    style = Stroke(width = sw, cap = StrokeCap.Round),
+                )
+                drawLine(tint, Offset(s * 0.5f, s * 0.08f), Offset(s * 0.5f, s * 0.5f), strokeWidth = sw, cap = StrokeCap.Round)
             }
         }
     }
@@ -1326,9 +1381,13 @@ private fun DialTab(
                 numbers = cfg.numbers, names = cfg.names, cfg = cfg, canEdit = !running,
                 onEdit = a.edit,
                 onRemove = {
-                    cfg.numbers.removeAt(it)
+                    cfg.removeWithUndo(it)
                     cfg.save()
                     clearFinished()
+                },
+                onMove = { from, to ->
+                    cfg.move(from, to)
+                    cfg.save()
                 },
             )
         }
@@ -1656,12 +1715,13 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 @Composable
 private fun QueueList(
     numbers: List<String>, names: Map<String, String>, cfg: Config,
-    canEdit: Boolean, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit,
+    canEdit: Boolean, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit, onMove: (Int, Int) -> Unit,
 ) {
     val status by RedialService.status.collectAsState()
     val finished = status is EngineState.Finished
     val p = status.progress()
     val listState = rememberLazyListState()
+    val list = numbers.toList()
 
     // Keep the number being dialled in view during a run.
     val currentIndex = p?.jobIndex
@@ -1669,8 +1729,27 @@ private fun QueueList(
         if (currentIndex != null && currentIndex in numbers.indices) listState.animateScrollToItem(currentIndex)
     }
 
-    LazyColumn(state = listState, modifier = Modifier.fillMaxWidth().heightIn(max = 340.dp)) {
-        itemsIndexed(numbers) { i, n ->
+    // Stable keys, so each row keeps its own swipe and entry state when the list changes.
+    val counts = HashMap<String, Int>()
+    val keys = list.map { n ->
+        val c = counts[n] ?: 0
+        counts[n] = c + 1
+        "$n#$c"
+    }
+    val heights = remember { HashMap<String, Float>() }
+
+    // Drag to reorder: rows slide aside while dragging; the move is applied on release.
+    var dragFrom by remember { mutableStateOf<Int?>(null) }
+    var dragY by remember { mutableFloatStateOf(0f) }
+    var rowH by remember { mutableFloatStateOf(150f) }
+    val from = dragFrom
+    val target = if (from == null) -1 else (from + (dragY / rowH).roundToInt()).coerceIn(0, (list.size - 1).coerceAtLeast(0))
+
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxWidth().heightIn(max = if (canEdit) 460.dp else 340.dp),
+    ) {
+        itemsIndexed(list, key = { i, _ -> keys.getOrElse(i) { "row$i" } }) { i, n ->
             val completed = p?.completed?.getOrNull(i) ?: 0
             val callsEach = cfg.callsFor(n)
             // 0 = queued, 1 = current, 2 = done
@@ -1681,18 +1760,162 @@ private fun QueueList(
                 i == p.jobIndex -> 1
                 else -> 0
             }
+            val shiftPx = if (from == null) {
+                0f
+            } else {
+                when {
+                    i == from -> dragY
+                    from < i && i <= target -> -rowH
+                    target <= i && i < from -> rowH
+                    else -> 0f
+                }
+            }
             // New rows ease in.
             val visible = remember { MutableTransitionState(false).apply { targetState = true } }
             AnimatedVisibility(
                 visibleState = visible,
+                modifier = Modifier.zIndex(if (i == from) 1f else 0f).graphicsLayer { translationY = shiftPx },
                 enter = fadeIn(tween(250)) + expandVertically(tween(250)),
             ) {
-                QueueItem(
-                    index = i, number = n, name = names[n], custom = cfg.customSummary(n), state = state,
-                    doneCount = if (finished) callsEach else completed, total = callsEach,
-                    canRemove = canEdit, onEdit = { onEdit(i) }, onRemove = { onRemove(i) },
-                )
+                SwipeToRemove(
+                    enabled = canEdit && from == null,
+                    onRemove = { onRemove(i) },
+                    modifier = Modifier.onSizeChanged { sz ->
+                        if (sz.height > 0) heights[keys.getOrElse(i) { "row$i" }] = sz.height.toFloat()
+                    },
+                ) {
+                    QueueItem(
+                        index = i, number = n, name = names[n], custom = cfg.customSummary(n), state = state,
+                        doneCount = if (finished) callsEach else completed, total = callsEach,
+                        canRemove = canEdit, dragging = i == from,
+                        onEdit = { onEdit(i) }, onRemove = { onRemove(i) },
+                        onDragStart = {
+                            rowH = heights[keys.getOrElse(i) { "row$i" }] ?: rowH
+                            dragY = 0f
+                            dragFrom = i
+                        },
+                        onDrag = { dy ->
+                            dragY += dy
+                            val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == dragFrom }
+                            if (info != null) {
+                                val top = info.offset + dragY
+                                val bottom = top + info.size
+                                val viewport = (listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset).toFloat()
+                                val d = when {
+                                    top < 0f -> -24f
+                                    bottom > viewport -> 24f
+                                    else -> 0f
+                                }
+                                if (d != 0f) dragY += listState.dispatchRawDelta(d)
+                            }
+                        },
+                        onDragEnd = {
+                            val f = dragFrom
+                            if (f != null) {
+                                val to = (f + (dragY / rowH).roundToInt()).coerceIn(0, (numbers.size - 1).coerceAtLeast(0))
+                                if (to != f) onMove(f, to)
+                            }
+                            dragFrom = null
+                            dragY = 0f
+                        },
+                    )
+                }
             }
+        }
+    }
+}
+
+/** Swipe a row sideways far enough to remove it. */
+@Composable
+private fun SwipeToRemove(
+    enabled: Boolean,
+    onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val removeNow by rememberUpdatedState(onRemove)
+    var x by remember { mutableFloatStateOf(0f) }
+    var width by remember { mutableFloatStateOf(1f) }
+    Box(modifier.fillMaxWidth().onSizeChanged { width = it.width.toFloat().coerceAtLeast(1f) }) {
+        if (x != 0f) {
+            val frac = (abs(x) / width).coerceIn(0f, 1f)
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .padding(vertical = 3.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Magenta.copy(alpha = 0.18f + 0.5f * frac))
+                    .padding(horizontal = 18.dp),
+                contentAlignment = if (x > 0f) Alignment.CenterStart else Alignment.CenterEnd,
+            ) {
+                Text("REMOVE", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 2.sp, color = Color.White)
+            }
+        }
+        Box(
+            Modifier
+                .graphicsLayer { translationX = x }
+                .pointerInput(enabled) {
+                    if (enabled) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                val go = abs(x) > width * 0.4f
+                                scope.launch {
+                                    if (go) {
+                                        val dir = if (x > 0f) 1f else -1f
+                                        animate(x, dir * width, animationSpec = tween(140)) { v, _ -> x = v }
+                                        if (Theming.haptics.value) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        removeNow()
+                                    } else {
+                                        animate(x, 0f, animationSpec = tween(160)) { v, _ -> x = v }
+                                    }
+                                }
+                            },
+                            onDragCancel = {
+                                scope.launch { animate(x, 0f, animationSpec = tween(160)) { v, _ -> x = v } }
+                            },
+                            onHorizontalDrag = { change, dx ->
+                                change.consume()
+                                x += dx
+                            },
+                        )
+                    }
+                },
+        ) { content() }
+    }
+}
+
+@Composable
+private fun DragHandle(color: Color) {
+    Canvas(Modifier.size(18.dp)) {
+        val w = size.width
+        val h = size.height
+        for (k in 0..2) {
+            val y = h * (0.25f + 0.25f * k)
+            drawLine(color, Offset(w * 0.1f, y), Offset(w * 0.9f, y), strokeWidth = 2.dp.toPx(), cap = StrokeCap.Round)
+        }
+    }
+}
+
+/** Appears for a few seconds after a number is removed. */
+@Composable
+private fun UndoBar(cfg: Config) {
+    val r = cfg.removed
+    if (r != null) {
+        LaunchedEffect(r) {
+            delay(5000)
+            if (cfg.removed === r) cfg.removed = null
+        }
+        Row(
+            Modifier.fillMaxWidth().background(Dock).padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Removed ${r.number}", fontFamily = Mono, fontSize = 13.sp, color = Color.White,
+                maxLines = 1, modifier = Modifier.weight(1f),
+            )
+            LinkButton("UNDO") { cfg.undoRemove() }
         }
     }
 }
@@ -1700,19 +1923,31 @@ private fun QueueList(
 @Composable
 private fun QueueItem(
     index: Int, number: String, name: String?, custom: String?, state: Int, doneCount: Int, total: Int,
-    canRemove: Boolean, onEdit: () -> Unit, onRemove: () -> Unit,
+    canRemove: Boolean, dragging: Boolean,
+    onEdit: () -> Unit, onRemove: () -> Unit,
+    onDragStart: () -> Unit, onDrag: (Float) -> Unit, onDragEnd: () -> Unit,
 ) {
     val current = state == 1
     val done = state == 2
     val shape = RoundedCornerShape(12.dp)
+    val haptic = LocalHapticFeedback.current
+    val startNow by rememberUpdatedState(onDragStart)
+    val dragNow by rememberUpdatedState(onDrag)
+    val endNow by rememberUpdatedState(onDragEnd)
     Column(
         Modifier
             .pressable(enabled = canRemove, onClick = onEdit)
             .fillMaxWidth()
             .padding(vertical = 3.dp)
             .clip(shape)
-            .background(if (current) Cyan.copy(alpha = 0.10f) else Color.Transparent)
-            .border(1.dp, if (current) Cyan.copy(alpha = 0.7f) else Hair, shape)
+            .background(
+                when {
+                    dragging -> Violet.copy(alpha = 0.22f)
+                    current -> Cyan.copy(alpha = 0.10f)
+                    else -> Color.Transparent
+                },
+            )
+            .border(1.dp, if (dragging || current) Cyan.copy(alpha = 0.7f) else Hair, shape)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1742,6 +1977,26 @@ private fun QueueItem(
                 }
             }
             if (canRemove) {
+                // Press and hold the handle, then drag to reorder.
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .pointerInput(Unit) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = {
+                                    if (Theming.haptics.value) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    startNow()
+                                },
+                                onDragEnd = { endNow() },
+                                onDragCancel = { endNow() },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    dragNow(amount.y)
+                                },
+                            )
+                        },
+                    contentAlignment = Alignment.Center,
+                ) { DragHandle(if (dragging) Cyan else Dim) }
                 Box(
                     Modifier.size(36.dp).clip(CircleShape).pressable(onClick = onRemove),
                     contentAlignment = Alignment.Center,
@@ -1937,6 +2192,9 @@ private fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
             }
             Spacer(Modifier.height(8.dp))
             ToggleRow("Pure black", "Deeper background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
+            ToggleRow("Haptic feedback", "Small vibrations when you tap buttons or drag rows.", cfg.hapticsOn, true) {
+                cfg.hapticsOn = it
+            }
         }
 
         GlassCard {
@@ -2133,32 +2391,44 @@ private fun UpdateCard(running: Boolean) {
     var msg by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var pct by remember { mutableStateOf(-1) }
+    var pending by remember { mutableStateOf<Updater.Release?>(null) }
+    var notes by remember { mutableStateOf<Updater.Release?>(null) }
     // Looked up once; PackageManager calls are not free inside composition.
     val versionLine = remember { "v${Updater.installedName(ctx)} · build ${Updater.installedBuild(ctx)}" }
 
+    // First tap checks and shows what is new; the second tap downloads and installs.
     fun getUpdate() {
         if (busy) return
-        if (!Updater.canInstall(ctx)) {
+        val target = pending
+        if (target != null && !Updater.canInstall(ctx)) {
             msg = "Allow installs from Squeve Redail, come back, then tap again."
             Updater.openInstallSettings(ctx)
             return
         }
         busy = true
         pct = -1
-        msg = "Checking for updates…"
+        msg = if (target != null) "Downloading build ${target.build}…" else "Checking for updates…"
         scope.launch {
             try {
-                val rel = Updater.latest()
-                val have = Updater.installedBuild(ctx)
-                when {
-                    rel == null -> msg = "No release found yet."
-                    rel.build <= have -> msg = "You're on the latest version (build $have)."
-                    else -> {
-                        msg = "Downloading build ${rel.build}…"
-                        pct = 0
-                        val apk = Updater.download(ctx, rel.apkUrl) { p -> pct = p }
-                        msg = "Opening installer…"
-                        Updater.install(ctx, apk)
+                if (target != null) {
+                    pct = 0
+                    val apk = Updater.download(ctx, target.apkUrl) { p -> pct = p }
+                    msg = "Opening installer…"
+                    Updater.install(ctx, apk)
+                } else {
+                    val rel = Updater.latest()
+                    val have = Updater.installedBuild(ctx)
+                    when {
+                        rel == null -> msg = "No release found yet."
+                        rel.build <= have -> {
+                            msg = "You're on the latest version (build $have)."
+                            notes = rel
+                        }
+                        else -> {
+                            pending = rel
+                            notes = rel
+                            msg = "Build ${rel.build} is ready to install."
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -2170,12 +2440,13 @@ private fun UpdateCard(running: Boolean) {
         }
     }
 
+    val pend = pending
     GlassCard {
         SectionTitle("UPDATES")
         Text(versionLine, fontFamily = Mono, fontSize = 13.sp, color = Dim)
         Spacer(Modifier.height(12.dp))
         NeonButton(
-            if (busy) "PLEASE WAIT…" else "GET LATEST VERSION",
+            if (busy) "PLEASE WAIT…" else if (pend != null) "INSTALL BUILD ${pend.build}" else "CHECK FOR UPDATES",
             enabled = !busy && !running,
             icon = { Glyph(Icons.Filled.Refresh, it, 20.dp) },
         ) { getUpdate() }
@@ -2192,6 +2463,14 @@ private fun UpdateCard(running: Boolean) {
             MiniBar(pct / 100f)
             Spacer(Modifier.height(4.dp))
             Text("$pct%", fontFamily = Mono, fontSize = 11.sp, color = Dim)
+        }
+        val n = notes
+        if (n != null && n.notes.isNotBlank()) {
+            Spacer(Modifier.height(12.dp))
+            Hairline()
+            Spacer(Modifier.height(10.dp))
+            FieldLabel(if (pend != null) "WHAT IS NEW IN BUILD ${n.build}" else "IN THIS VERSION")
+            Text(n.notes, fontSize = 12.sp, color = Dim)
         }
     }
 }

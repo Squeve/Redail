@@ -6,6 +6,9 @@ plugins {
 // CI sets GITHUB_RUN_NUMBER; every pushed build gets a higher versionCode than the last.
 val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
 
+// Bump this when you start a new feature round; CI appends the run number (0.15.123).
+val baseVersion = "0.15"
+
 android {
     namespace = "com.squeve.redail"
     compileSdk = 35
@@ -14,8 +17,8 @@ android {
         applicationId = "com.squeve.redail"
         minSdk = 28            // endCall() needs API 28+
         targetSdk = 34
-        versionCode = if (runNumber != null) runNumber + 100 else 14
-        versionName = "0.14"
+        versionCode = if (runNumber != null) runNumber + 100 else 15
+        versionName = if (runNumber != null) "$baseVersion.$runNumber" else "$baseVersion-dev"
     }
 
     // Same key on every build, so new APKs install over old ones.
@@ -69,5 +72,7 @@ dependencies {
     implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Real org.json for unit tests (the Android stubs throw).
+    testImplementation("org.json:json:20231013")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
 }

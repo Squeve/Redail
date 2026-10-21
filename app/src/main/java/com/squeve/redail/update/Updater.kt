@@ -17,7 +17,7 @@ import java.net.URL
 object Updater {
     private const val LATEST = "https://api.github.com/repos/Squeve/Redail/releases/latest"
 
-    data class Release(val build: Int, val name: String, val apkUrl: String)
+    data class Release(val build: Int, val name: String, val apkUrl: String, val notes: String = "")
 
     @Suppress("DEPRECATION")
     fun installedBuild(ctx: Context): Long =
@@ -26,6 +26,22 @@ object Updater {
     @Suppress("DEPRECATION")
     fun installedName(ctx: Context): String =
         ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName.orEmpty()
+
+    /** GitHub release text (markdown) turned into plain lines the update card can show. */
+    fun cleanNotes(raw: String, maxChars: Int = 1200): String {
+        val out = raw.replace("\r", "").lines()
+            .map { it.trim() }
+            .filterNot { it.startsWith("**Full Changelog**", ignoreCase = true) }
+            .map { line ->
+                var l = line.trimStart('#').trim()
+                if (l.startsWith("- ") || l.startsWith("* ")) l = "• " + l.drop(2)
+                l.replace("**", "").replace("`", "")
+            }
+            .joinToString("\n")
+            .replace(Regex("\n{3,}"), "\n\n")
+            .trim()
+        return if (out.length > maxChars) out.take(maxChars).trimEnd() + "…" else out
+    }
 
     fun canInstall(ctx: Context): Boolean = ctx.packageManager.canRequestPackageInstalls()
 
@@ -61,7 +77,7 @@ object Updater {
                     break
                 }
             }
-            if (url == null) null else Release(build, json.optString("name", tag), url)
+            if (url == null) null else Release(build, json.optString("name", tag), url, cleanNotes(json.optString("body", "")))
         } finally {
             conn.disconnect()
         }

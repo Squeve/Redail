@@ -228,7 +228,9 @@ class RedialService : Service() {
     private fun describe(s: EngineState): String = when (s) {
         is EngineState.Idle -> "Starting…"
         is EngineState.Dialing -> "Dialing ${s.p.number} · call ${s.p.step}/${s.p.steps}"
-        is EngineState.InCall -> "Calling ${s.p.number} · call ${s.p.step}/${s.p.steps}"
+        is EngineState.InCall ->
+            "Calling ${s.p.number} · call ${s.p.step}/${s.p.steps}" +
+                (if (s.hasLimit && s.hangUpAt == null) " · timer off" else "")
         is EngineState.Cooldown -> "Next: ${s.next.number} · call ${s.next.step}/${s.next.steps}"
         is EngineState.Paused -> waitReason.value?.let { "Waiting: $it" } ?: "Paused"
         is EngineState.Finished -> "Done · ${s.results.size} calls"
@@ -256,9 +258,21 @@ class RedialService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .addAction(action("Pause", ACTION_PAUSE))
-            .addAction(action("Resume", ACTION_RESUME))
-            .addAction(action("Stop", ACTION_STOP))
+
+        // Only the buttons that make sense right now (the shade shows three at most).
+        when {
+            s is EngineState.Paused -> b.addAction(action("Resume", ACTION_RESUME))
+            s is EngineState.InCall && s.hasLimit -> {
+                if (s.hangUpAt != null) {
+                    b.addAction(action("Keep call", ACTION_HOLD))
+                } else {
+                    b.addAction(action("Auto hang-up", ACTION_REARM))
+                }
+                b.addAction(action("Pause", ACTION_PAUSE))
+            }
+            else -> b.addAction(action("Pause", ACTION_PAUSE))
+        }
+        b.addAction(action("Stop", ACTION_STOP))
 
         // Run progress bar.
         val p = s.progress()
