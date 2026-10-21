@@ -1197,6 +1197,7 @@ private fun PulseDot(active: Boolean) {
     }
 }
 
+@Composable
 private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
         Icons.Filled.Call to "DIAL",
@@ -1271,6 +1272,7 @@ private fun ControlDock(
 }
 
 // ───────────────────────── DIAL tab ─────────────────────────
+@Composable
 private fun DialTab(
     cfg: Config, sims: List<SimOption>, running: Boolean,
     checkpoint: Checkpoint?, scheduled: Scheduled?, a: DialActions,
@@ -1589,6 +1591,7 @@ private fun CooldownText(untilMs: Long) {
 }
 
 // ───────────────────────── Queue ─────────────────────────
+@Composable
 private fun AddNumberRow(enabled: Boolean, onAdd: (String) -> Unit, a: DialActions) {
     // Keystrokes only recompose this row, not the whole screen. Saved so tab switches keep the text.
     var input by rememberSaveable { mutableStateOf("") }
@@ -1766,6 +1769,7 @@ private fun MiniBar(fraction: Float) {
 }
 
 // ───────────────────────── CONFIG tab ─────────────────────────
+@Composable
 private fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
     val ctx = LocalContext.current
     Column(
@@ -2045,6 +2049,7 @@ private fun ToggleRow(
 }
 
 // ───────────────────────── SYSTEM tab ─────────────────────────
+@Composable
 private fun SystemTab(
     granted: Boolean,
     refresh: Int,
@@ -2498,6 +2503,7 @@ private fun CheckMark(selected: Boolean, disabled: Boolean) {
 }
 
 // ───────────────────────── Per-number settings ─────────────────────────
+@Composable
 private fun TargetDialog(
     number: String,
     name: String?,
