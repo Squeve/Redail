@@ -1,6 +1,9 @@
 package com.squeve.redail
 
 import android.Manifest
+import android.app.Activity
+import android.app.KeyguardManager
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -57,6 +60,10 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -96,13 +103,23 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.squeve.redail.engine.SimOption
 import com.squeve.redail.engine.RecentCall
 import com.squeve.redail.engine.listSims
 import com.squeve.redail.engine.loadRecentCalls
 import com.squeve.redail.model.*
+import com.squeve.redail.data.Checkpoint
+import com.squeve.redail.data.EventLog
+import com.squeve.redail.data.HistoryRecord
+import com.squeve.redail.data.HistoryStore
+import com.squeve.redail.data.ListStore
+import com.squeve.redail.data.RunStore
+import com.squeve.redail.data.Scheduled
+import com.squeve.redail.data.Scheduler
 import com.squeve.redail.service.RedialService
+import com.squeve.redail.service.RunLauncher
 import com.squeve.redail.service.showBubblePreview
 import com.squeve.redail.update.Updater
 import kotlinx.coroutines.Dispatchers
@@ -112,19 +129,57 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 // ───────────────────────── Palette & type ─────────────────────────
-private val Ink = Color(0xFF070B14)
-private val InkSoft = Color(0xFF0D1424)
-private val Panel = Color(0xCC111A2C)
-private val Dock = Color(0xF00A1020)
-private val Cyan = Color(0xFF00E5FF)
-private val Violet = Color(0xFF7C4DFF)
+/** Accent colours, pure-black mode and UI size, all changeable at runtime. */
+private class Accent(val name: String, val main: Color, val second: Color)
+
+private val ACCENTS = listOf(
+    Accent("CYAN", Color(0xFF00E5FF), Color(0xFF7C4DFF)),
+    Accent("MINT", Color(0xFF00E676), Color(0xFF00B8D4)),
+    Accent("VIOLET", Color(0xFFB388FF), Color(0xFF536DFE)),
+    Accent("AMBER", Color(0xFFFFC400), Color(0xFFFF6D00)),
+    Accent("PINK", Color(0xFFFF4081), Color(0xFF7C4DFF)),
+    Accent("BLUE", Color(0xFF448AFF), Color(0xFF00E5FF)),
+)
+
+private object Theming {
+    val accent = mutableStateOf(ACCENTS[0].main)
+    val accent2 = mutableStateOf(ACCENTS[0].second)
+    val black = mutableStateOf(false)
+    val size = mutableStateOf(1)           // 0 compact, 1 normal, 2 large
+
+    fun setAccent(i: Int) {
+        val a = ACCENTS[i.coerceIn(0, ACCENTS.size - 1)]
+        accent.value = a.main
+        accent2.value = a.second
+    }
+
+    fun load(prefs: SharedPreferences) {
+        setAccent(prefs.getInt("accent", 0))
+        black.value = prefs.getBoolean("black", false)
+        size.value = prefs.getInt("uiSize", 1)
+    }
+}
+
+private val Ink: Color get() = if (Theming.black.value) Color.Black else Color(0xFF070B14)
+private val InkSoft: Color get() = if (Theming.black.value) Color(0xFF050505) else Color(0xFF0D1424)
+private val Panel: Color get() = if (Theming.black.value) Color(0xE60C0C0C) else Color(0xCC111A2C)
+private val Dock: Color get() = if (Theming.black.value) Color(0xFF000000) else Color(0xF00A1020)
+private val Cyan: Color get() = Theming.accent.value
+private val Violet: Color get() = Theming.accent2.value
 private val Magenta = Color(0xFFFF2E93)
 private val Mint = Color(0xFF00E676)
 private val Dim = Color(0xFF8A9BB8)
-private val Hair = Color(0xFF22304A)
+private val Hair: Color get() = if (Theming.black.value) Color(0xFF262626) else Color(0xFF22304A)
 
 /** The whole UI is drawn at this fraction of normal size (dp and sp together). */
 private const val UI_SCALE = 0.88f
@@ -132,11 +187,11 @@ private const val UI_SCALE = 0.88f
 private val Mono: FontFamily get() = Fonts.mono
 private val Display: FontFamily get() = Fonts.display
 
-private val NeonBrush = Brush.horizontalGradient(listOf(Cyan, Violet))
+private val NeonBrush: Brush get() = Brush.horizontalGradient(listOf(Cyan, Violet))
 private val DangerBrush = Brush.horizontalGradient(listOf(Magenta, Color(0xFFFF5252)))
-private val DisabledBrush = Brush.horizontalGradient(listOf(Hair, Hair))
-private val BgBrush = Brush.verticalGradient(listOf(Ink, InkSoft, Ink))
-private val RingBrush = Brush.sweepGradient(listOf(Cyan, Violet, Magenta, Cyan))
+private val DisabledBrush: Brush get() = Brush.horizontalGradient(listOf(Hair, Hair))
+private val BgBrush: Brush get() = Brush.verticalGradient(listOf(Ink, InkSoft, Ink))
+private val RingBrush: Brush get() = Brush.sweepGradient(listOf(Cyan, Violet, Magenta, Cyan))
 
 /** Material text styles all use the bundled family, so nothing falls back to the phone's system font. */
 private fun typographyWith(f: FontFamily): Typography {
@@ -160,7 +215,7 @@ private fun typographyWith(f: FontFamily): Typography {
     )
 }
 
-private val Scheme = darkColorScheme(
+private fun schemeFor() = darkColorScheme(
     primary = Cyan,
     onPrimary = Ink,
     background = Ink,
@@ -236,16 +291,77 @@ private fun allGranted(ctx: Context) = REQUIRED.all {
 private fun permsToRequest(): Array<String> =
     if (Build.VERSION.SDK_INT >= 33) REQUIRED + Manifest.permission.POST_NOTIFICATIONS else REQUIRED
 
-private fun addNumbers(target: MutableList<String>, raw: String): List<String> {
+private class AddResult(val added: List<String>, val invalid: Int, val duplicates: Int)
+
+private fun digitsKey(n: String) = n.filter { it.isDigit() }.takeLast(9)
+
+private fun isValidNumber(n: String): Boolean {
+    val digits = n.count { it.isDigit() }
+    return digits in 3..15
+}
+
+/** Local numbers (one leading 0) get the chosen country code. */
+private fun normalizeNumber(n: String, countryCode: String): String {
+    val cc = countryCode.filter { it.isDigit() }
+    return if (cc.isNotEmpty() && n.startsWith("0") && !n.startsWith("00")) "+" + cc + n.drop(1) else n
+}
+
+/** Adds numbers to the queue, skipping invalid ones and (unless allowed) duplicates. */
+private fun addChecked(cfg: Config, raw: String): AddResult {
     val added = mutableListOf<String>()
+    var invalid = 0
+    var duplicates = 0
     raw.split(Regex("[,;\\n]+")).forEach { part ->
-        val cleaned = part.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
-        if (cleaned.any { it.isDigit() }) {
-            target.add(cleaned)
-            added.add(cleaned)
+        var n = part.filter { it.isDigit() || it == '+' || it == '*' || it == '#' }
+        if (n.none { it.isDigit() }) return@forEach
+        n = normalizeNumber(n, cfg.countryCode)
+        if (!isValidNumber(n)) {
+            invalid++
+            return@forEach
         }
+        val key = digitsKey(n)
+        if (cfg.numbers.any { digitsKey(it) == key } && !cfg.allowDup) {
+            duplicates++
+            return@forEach
+        }
+        cfg.numbers.add(n)
+        added.add(n)
     }
-    return added
+    return AddResult(added, invalid, duplicates)
+}
+
+private val PHONE_RE = Regex("""(?<![\w+])\+?\d[\d\s().\-]{5,}\d""")
+
+/** Pulls phone-like numbers out of any text (shared text, clipboard, a CSV file). */
+private fun extractNumbers(text: String): List<String> =
+    PHONE_RE.findAll(text)
+        .map { m -> m.value.filter { it.isDigit() || it == '+' } }
+        .filter { n -> n.count { it.isDigit() } in 7..15 }
+        .distinct()
+        .toList()
+
+private fun reportAdd(ctx: Context, r: AddResult) {
+    val parts = mutableListOf("Added ${r.added.size}")
+    if (r.invalid > 0) parts += "${r.invalid} invalid skipped"
+    if (r.duplicates > 0) parts += "${r.duplicates} duplicate" + (if (r.duplicates > 1) "s" else "") + " skipped"
+    Toast.makeText(ctx, parts.joinToString(" · "), Toast.LENGTH_SHORT).show()
+}
+
+private fun shareFile(ctx: Context, file: File, mime: String) {
+    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", file)
+    val send = Intent(Intent.ACTION_SEND)
+        .setType(mime)
+        .putExtra(Intent.EXTRA_STREAM, uri)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    ctx.startActivity(Intent.createChooser(send, "Share").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+private fun hm(minutes: Int) = "%02d:%02d".format(minutes / 60, minutes % 60)
+
+private fun Boolean?.flag(): String = when (this) {
+    null -> ""
+    true -> "1"
+    false -> "0"
 }
 
 private fun typeLabel(t: Int) = when (t) {
@@ -315,13 +431,41 @@ private object ImeSignal {
     val open = MutableStateFlow(false)
 }
 
+/** Text shared into the app (share sheet), waiting for the user to confirm the import. */
+private object ShareInbox {
+    val pending = MutableStateFlow<String?>(null)
+}
+
+/** App lock state. */
+private object LockState {
+    val locked = MutableStateFlow(false)
+    @Volatile var lastUnlock = 0L
+}
+
 /** Bumped on every onResume so permission-dependent UI refreshes after returning from system settings. */
 private object ResumeSignal {
     val tick = MutableStateFlow(0)
 }
 
 /** Per-number settings. A null field follows the global setting. hangUp is in seconds; 0 means no limit. */
-private data class NumOverride(val calls: Int? = null, val hangUp: Int? = null, val gap: Int? = null)
+private data class NumOverride(
+    val calls: Int? = null,
+    val hangUp: Int? = null,
+    val gap: Int? = null,
+    val speaker: Boolean? = null,
+    val mute: Boolean? = null,
+)
+
+private fun overrideLine(number: String, o: NumOverride) =
+    "$number|${o.calls ?: ""}|${o.hangUp ?: ""}|${o.gap ?: ""}|${o.speaker.flag()}|${o.mute.flag()}"
+
+/** Inverse of overrideLine: "number|calls|hangUp|gap|speaker|mute" (the last two are optional). */
+private fun parseOverride(line: String): Pair<String, NumOverride>? {
+    val f = line.split('|')
+    if (f.size < 4 || f[0].isBlank()) return null
+    fun flag(i: Int): Boolean? = f.getOrNull(i)?.let { v -> if (v.isEmpty()) null else v == "1" }
+    return f[0] to NumOverride(f[1].toIntOrNull(), f[2].toIntOrNull(), f[3].toIntOrNull(), flag(4), flag(5))
+}
 
 /** All user settings in one place; changes only recompose whatever reads that field. */
 @Stable
@@ -337,30 +481,51 @@ private class Config(private val prefs: SharedPreferences) {
             if (i > 0) put(line.substring(0, i), line.substring(i + 1))
         }
     }
-    /** Numbers that have their own calls / hang-up / interval. Keyed by number. */
+
+    /** Numbers that have their own calls / hang-up / interval / audio. Keyed by number. */
     val overrides = mutableStateMapOf<String, NumOverride>().apply {
         prefs.getString("overrides", "")?.split("\n")?.forEach { line ->
-            val f = line.split('|')
-            if (f.size == 4 && f[0].isNotBlank()) {
-                put(f[0], NumOverride(f[1].toIntOrNull(), f[2].toIntOrNull(), f[3].toIntOrNull()))
-            }
+            parseOverride(line)?.let { (k, v) -> put(k, v) }
         }
     }
+
     var calls by mutableStateOf(prefs.getInt("calls", 5))
     var gapSec by mutableStateOf(prefs.getInt("gap", 5))
+    var gapRandom by mutableStateOf(prefs.getBoolean("gapRandom", false))
+    var gapMaxSec by mutableStateOf(prefs.getInt("gapMax", 10))
     var limitOn by mutableStateOf(prefs.getBoolean("limitOn", true))
     var durSec by mutableStateOf(prefs.getInt("dur", 30))
     var skipAnswered by mutableStateOf(prefs.getBoolean("skip", false))
+    var answersToStop by mutableStateOf(prefs.getInt("answersToStop", 1))
+    var answerSec by mutableStateOf(prefs.getInt("answerSec", 5))
     var speakerOn by mutableStateOf(prefs.getBoolean("speaker", false))
     var muteOn by mutableStateOf(prefs.getBoolean("mute", false))
     var simSlot by mutableStateOf(prefs.getInt("simSlot", -1))     // -1 = phone default
-    var bubbleLook by mutableStateOf(prefs.getInt("bubbleLook", 0)) // 0 dark, 1 light, 2 neon
+    var simMode by mutableStateOf(prefs.getInt("simMode", 0))      // 0 fixed, 1 fall back, 2 alternate
     var order by mutableStateOf(
         CallOrder.values().getOrElse(prefs.getInt("order", 0)) { CallOrder.SEQUENTIAL },
     )
+    var bubbleLook by mutableStateOf(prefs.getInt("bubbleLook", 0)) // 0 dark, 1 light, 2 neon
+    var alertOn by mutableStateOf(prefs.getBoolean("alertOn", true))
+    var dailyCap by mutableStateOf(prefs.getInt("dailyCap", 0))
+    var quietOn by mutableStateOf(prefs.getBoolean("quietOn", false))
+    var quietStart by mutableStateOf(prefs.getInt("quietStart", 22 * 60))
+    var quietEnd by mutableStateOf(prefs.getInt("quietEnd", 7 * 60))
+    var batteryPause by mutableStateOf(prefs.getBoolean("batteryPause", false))
+    var countryCode by mutableStateOf(prefs.getString("countryCode", "") ?: "")
+    var allowDup by mutableStateOf(prefs.getBoolean("allowDup", false))
+    var lockOn by mutableStateOf(prefs.getBoolean("lockOn", false))
+    var accentIdx by mutableStateOf(prefs.getInt("accent", 0))
+    var blackOn by mutableStateOf(prefs.getBoolean("black", false))
+    var uiSize by mutableStateOf(prefs.getInt("uiSize", 1))
+
+    /** Not remembered between launches on purpose: a forgotten dry-run switch must never hide a real run. */
+    var dryRun by mutableStateOf(false)
 
     fun callsFor(n: String): Int = overrides[n]?.calls ?: calls
     fun gapFor(n: String): Int = overrides[n]?.gap ?: gapSec
+    fun speakerFor(n: String): Boolean = overrides[n]?.speaker ?: speakerOn
+    fun muteFor(n: String): Boolean = overrides[n]?.mute ?: muteOn
 
     /** Hang-up in seconds for this number, or null when calls should run until they end by themselves. */
     fun hangUpFor(n: String): Int? = when (val h = overrides[n]?.hangUp) {
@@ -376,9 +541,35 @@ private class Config(private val prefs: SharedPreferences) {
             o.calls?.let { "×$it calls" },
             o.hangUp?.let { if (it == 0) "no hang-up" else "${it}s hang-up" },
             o.gap?.let { "${it}s gap" },
+            o.speaker?.let { if (it) "speaker" else "no speaker" },
+            o.mute?.let { if (it) "muted" else "unmuted" },
         )
         return if (parts.isEmpty()) null else "CUSTOM · " + parts.joinToString(" · ")
     }
+
+    fun buildJobs(list: List<String>): List<RedialJob> = list.map { n ->
+        val ownGap = overrides[n]?.gap != null
+        RedialJob(
+            number = n,
+            attempts = callsFor(n),
+            gapMs = gapFor(n) * 1000L,
+            gapMaxMs = if (gapRandom && !ownGap) maxOf(gapMaxSec, gapSec) * 1000L else null,
+            hangUpAfterMs = hangUpFor(n)?.let { it * 1000L },
+            stopOnConnected = skipAnswered,
+            stopAfterAnswers = answersToStop,
+            speaker = speakerFor(n),
+            muteMic = muteFor(n),
+        )
+    }
+
+    fun buildPlan(): RunPlan = RunPlan(buildJobs(numbers.toList()), order, simSlot, dryRun)
+
+    /** Reads every saved setting, so a snapshotFlow over it fires whenever anything changes. */
+    fun fingerprint(): List<Any?> = listOf(
+        calls, gapSec, gapRandom, gapMaxSec, limitOn, durSec, skipAnswered, answersToStop, answerSec,
+        speakerOn, muteOn, simSlot, simMode, order, bubbleLook, alertOn, dailyCap, quietOn, quietStart,
+        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize,
+    )
 
     fun save() {
         prefs.edit()
@@ -390,28 +581,173 @@ private class Config(private val prefs: SharedPreferences) {
             )
             .putString(
                 "overrides",
-                overrides.entries.filter { it.key in numbers }.joinToString("\n") {
-                    "${it.key}|${it.value.calls ?: ""}|${it.value.hangUp ?: ""}|${it.value.gap ?: ""}"
-                },
+                overrides.entries.filter { it.key in numbers }.joinToString("\n") { overrideLine(it.key, it.value) },
             )
-            .putInt("calls", calls).putInt("gap", gapSec).putInt("dur", durSec)
-            .putBoolean("limitOn", limitOn).putBoolean("skip", skipAnswered)
+            .putInt("calls", calls).putInt("gap", gapSec)
+            .putBoolean("gapRandom", gapRandom).putInt("gapMax", gapMaxSec)
+            .putInt("dur", durSec).putBoolean("limitOn", limitOn)
+            .putBoolean("skip", skipAnswered).putInt("answersToStop", answersToStop).putInt("answerSec", answerSec)
             .putBoolean("speaker", speakerOn).putBoolean("mute", muteOn)
-            .putInt("simSlot", simSlot).putInt("order", order.ordinal).putInt("bubbleLook", bubbleLook)
+            .putInt("simSlot", simSlot).putInt("simMode", simMode).putInt("order", order.ordinal)
+            .putInt("bubbleLook", bubbleLook).putBoolean("alertOn", alertOn)
+            .putInt("dailyCap", dailyCap).putBoolean("quietOn", quietOn)
+            .putInt("quietStart", quietStart).putInt("quietEnd", quietEnd)
+            .putBoolean("batteryPause", batteryPause)
+            .putString("countryCode", countryCode).putBoolean("allowDup", allowDup)
+            .putBoolean("lockOn", lockOn)
+            .putInt("accent", accentIdx).putBoolean("black", blackOn).putInt("uiSize", uiSize)
             .apply()
+    }
+
+    /** Everything for a backup (full = true) or just the queue and run settings for a saved list. */
+    fun toJson(full: Boolean): JSONObject = JSONObject().apply {
+        put("numbers", JSONArray(numbers.toList()))
+        put("names", JSONObject().also { o -> names.entries.forEach { e -> o.put(e.key, e.value) } })
+        put("overrides", JSONObject().also { o -> overrides.entries.forEach { e -> o.put(e.key, overrideLine(e.key, e.value)) } })
+        put("calls", calls)
+        put("gap", gapSec)
+        put("gapRandom", gapRandom)
+        put("gapMax", gapMaxSec)
+        put("limitOn", limitOn)
+        put("dur", durSec)
+        put("skip", skipAnswered)
+        put("answersToStop", answersToStop)
+        put("answerSec", answerSec)
+        put("speaker", speakerOn)
+        put("mute", muteOn)
+        put("simSlot", simSlot)
+        put("simMode", simMode)
+        put("order", order.ordinal)
+        if (full) {
+            put("bubbleLook", bubbleLook)
+            put("alertOn", alertOn)
+            put("dailyCap", dailyCap)
+            put("quietOn", quietOn)
+            put("quietStart", quietStart)
+            put("quietEnd", quietEnd)
+            put("batteryPause", batteryPause)
+            put("countryCode", countryCode)
+            put("allowDup", allowDup)
+            put("accent", accentIdx)
+            put("black", blackOn)
+            put("uiSize", uiSize)
+        }
+    }
+
+    fun applyJson(o: JSONObject) {
+        o.optJSONArray("numbers")?.let { arr ->
+            numbers.clear()
+            for (i in 0 until arr.length()) numbers.add(arr.getString(i))
+        }
+        o.optJSONObject("names")?.let { n ->
+            names.clear()
+            n.keys().forEach { k -> names[k] = n.getString(k) }
+        }
+        o.optJSONObject("overrides")?.let { ov ->
+            overrides.clear()
+            ov.keys().forEach { k -> parseOverride(ov.getString(k))?.let { (num, v) -> overrides[num] = v } }
+        }
+        calls = o.optInt("calls", calls)
+        gapSec = o.optInt("gap", gapSec)
+        gapRandom = o.optBoolean("gapRandom", gapRandom)
+        gapMaxSec = o.optInt("gapMax", gapMaxSec)
+        limitOn = o.optBoolean("limitOn", limitOn)
+        durSec = o.optInt("dur", durSec)
+        skipAnswered = o.optBoolean("skip", skipAnswered)
+        answersToStop = o.optInt("answersToStop", answersToStop)
+        answerSec = o.optInt("answerSec", answerSec)
+        speakerOn = o.optBoolean("speaker", speakerOn)
+        muteOn = o.optBoolean("mute", muteOn)
+        simSlot = o.optInt("simSlot", simSlot)
+        simMode = o.optInt("simMode", simMode)
+        order = CallOrder.values().getOrElse(o.optInt("order", order.ordinal)) { order }
+        bubbleLook = o.optInt("bubbleLook", bubbleLook)
+        alertOn = o.optBoolean("alertOn", alertOn)
+        dailyCap = o.optInt("dailyCap", dailyCap)
+        quietOn = o.optBoolean("quietOn", quietOn)
+        quietStart = o.optInt("quietStart", quietStart)
+        quietEnd = o.optInt("quietEnd", quietEnd)
+        batteryPause = o.optBoolean("batteryPause", batteryPause)
+        countryCode = o.optString("countryCode", countryCode)
+        allowDup = o.optBoolean("allowDup", allowDup)
+        accentIdx = o.optInt("accent", accentIdx)
+        blackOn = o.optBoolean("black", blackOn)
+        uiSize = o.optInt("uiSize", uiSize)
     }
 }
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val ACTION_START_LAST = "com.squeve.redail.START_LAST"
+        const val ACTION_STOP_RUN = "com.squeve.redail.STOP_RUN"
+    }
+
+    private var leftAt = 0L
+
     override fun onResume() {
         super.onResume()
         ResumeSignal.tick.value = ResumeSignal.tick.value + 1
+        val lockOn = getSharedPreferences("redail", Context.MODE_PRIVATE).getBoolean("lockOn", false)
+        val now = System.currentTimeMillis()
+        if (lockOn && leftAt > 0 && now - leftAt > 20_000 && now - LockState.lastUnlock > 5_000) {
+            LockState.locked.value = true
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        leftAt = System.currentTimeMillis()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    /** Shortcuts, the tile and the widget start / stop runs here; the share sheet hands over numbers. */
+    private fun handleIntent(intent: Intent?) {
+        val i = intent ?: return
+        when (i.action) {
+            ACTION_START_LAST -> {
+                i.action = null
+                val plan = RunStore.loadLast(this)
+                when {
+                    plan == null -> Toast.makeText(this, "No previous run yet", Toast.LENGTH_SHORT).show()
+                    !allGranted(this) ->
+                        Toast.makeText(this, "Open the app and grant permissions first", Toast.LENGTH_LONG).show()
+                    isRunning(RedialService.status.value) ->
+                        Toast.makeText(this, "Already running", Toast.LENGTH_SHORT).show()
+                    else -> RunLauncher.start(this, plan)
+                }
+            }
+            ACTION_STOP_RUN -> {
+                i.action = null
+                RunLauncher.stop(this)
+                finish()
+            }
+            Intent.ACTION_SEND -> {
+                i.action = null
+                sharedText(i)?.let { ShareInbox.pending.value = it }
+            }
+        }
+    }
+
+    private fun sharedText(i: Intent): String? {
+        val direct = i.getStringExtra(Intent.EXTRA_TEXT)
+        if (!direct.isNullOrBlank()) return direct
+        @Suppress("DEPRECATION")
+        val uri = i.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: return null
+        return readUri(this, uri)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        val prefs = getSharedPreferences("redail", Context.MODE_PRIVATE)
         Fonts.init(this)
+        Theming.load(prefs)
+        if (prefs.getBoolean("lockOn", false) && savedInstanceState == null) LockState.locked.value = true
         window.statusBarColor = Ink.toArgb()
         window.navigationBarColor = Ink.toArgb()
         val decor = window.decorView
@@ -422,12 +758,22 @@ class MainActivity : ComponentActivity() {
             ImeSignal.open.value = full > 0 && (full - r.bottom) > full * 0.15f
         }
         setContent {
-            // Uniformly smaller UI, and ignore oversized system font scaling so layouts stay tidy.
+            // UI size is a setting; system font scaling beyond 1x is ignored so layouts stay tidy.
             val base = LocalDensity.current
-            val scaled = remember(base) { Density(base.density * UI_SCALE, base.fontScale.coerceAtMost(1f)) }
+            val factor = when (Theming.size.value) {
+                0 -> 0.80f
+                2 -> 1.0f
+                else -> UI_SCALE
+            }
+            val scaled = remember(base, factor) { Density(base.density * factor, base.fontScale.coerceAtMost(1f)) }
             val type = remember { typographyWith(Fonts.body) }
+            val scheme = remember(Theming.accent.value, Theming.black.value) { schemeFor() }
+            SideEffect {
+                window.statusBarColor = Ink.toArgb()
+                window.navigationBarColor = Ink.toArgb()
+            }
             CompositionLocalProvider(LocalDensity provides scaled) {
-                MaterialTheme(colorScheme = Scheme, typography = type) {
+                MaterialTheme(colorScheme = scheme, typography = type) {
                     Box(Modifier.fillMaxSize().techBackdrop()) {
                         Surface(
                             Modifier.fillMaxSize(),
@@ -438,40 +784,73 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        handleIntent(intent)
     }
 }
 
 // ───────────────────────── Screen host ─────────────────────────
+private fun readUri(ctx: Context, uri: Uri): String? =
+    runCatching { ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } }.getOrNull()
+
+/** Everything the DIAL tab can ask the host to do. */
+private class DialActions(
+    val add: (String) -> Unit,
+    val contacts: () -> Unit,
+    val callLog: () -> Unit,
+    val paste: () -> Unit,
+    val importFile: () -> Unit,
+    val edit: (Int) -> Unit,
+    val saveList: () -> Unit,
+    val lists: () -> Unit,
+    val schedule: () -> Unit,
+    val cancelSchedule: () -> Unit,
+    val resume: () -> Unit,
+    val discardResume: () -> Unit,
+    val retry: (List<String>) -> Unit,
+    val export: () -> Unit,
+)
+
 @Composable
 private fun RedialScreen() {
     val ctx = LocalContext.current
     val prefs = remember { ctx.getSharedPreferences("redail", Context.MODE_PRIVATE) }
     val cfg = remember { Config(prefs) }
+    val scope = rememberCoroutineScope()
 
     var tab by rememberSaveable { mutableStateOf(0) }
     var permTick by remember { mutableStateOf(0) }
+    var uiTick by remember { mutableStateOf(0) }
     val resumeTick by ResumeSignal.tick.collectAsState()
     val imeOpen by ImeSignal.open.collectAsState()
+    val locked by LockState.locked.collectAsState()
+    val inbox by ShareInbox.pending.collectAsState()
 
     // Only recompose the host when "running" flips, not on every engine state change.
     val runningFlow = remember { RedialService.status.map { isRunning(it) }.distinctUntilChanged() }
     val running by runningFlow.collectAsState(initial = isRunning(RedialService.status.value))
 
-    val refresh = permTick + resumeTick
+    val refresh = permTick + resumeTick + uiTick
     val sims by produceState(emptyList<SimOption>(), refresh) {
         value = withContext(Dispatchers.IO) { runCatching { listSims(ctx) }.getOrDefault(emptyList()) }
     }
     val granted = remember(refresh) { allGranted(ctx) }
+    val checkpoint = remember(refresh, running) { if (running) null else RunStore.loadCheckpoint(ctx) }
+    val scheduled = remember(refresh, running) { RunStore.loadSchedule(ctx) }
 
-    // Settings are remembered between runs.
-    LaunchedEffect(
-        cfg.calls, cfg.gapSec, cfg.limitOn, cfg.durSec, cfg.skipAnswered,
-        cfg.speakerOn, cfg.muteOn, cfg.simSlot, cfg.order, cfg.bubbleLook,
-    ) { cfg.save() }
+    // Settings are remembered between runs; theme changes are applied as they happen.
+    LaunchedEffect(Unit) { snapshotFlow { cfg.fingerprint() }.collect { cfg.save() } }
+    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize) {
+        Theming.setAccent(cfg.accentIdx)
+        Theming.black.value = cfg.blackOn
+        Theming.size.value = cfg.uiSize
+    }
 
     var showLog by remember { mutableStateOf(false) }
-    var editIndex by remember { mutableStateOf<Int?>(null) }
     var wantLog by remember { mutableStateOf(false) }
+    var editIndex by remember { mutableStateOf<Int?>(null) }
+    var showSave by remember { mutableStateOf(false) }
+    var showLists by remember { mutableStateOf(false) }
+    var showSchedule by remember { mutableStateOf(false) }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         permTick++
@@ -496,9 +875,10 @@ private fun RedialScreen() {
                     null, null, null,
                 )?.use { c ->
                     if (c.moveToFirst()) {
-                        val added = addNumbers(cfg.numbers, c.getString(0).orEmpty())
+                        val r = addChecked(cfg, c.getString(0).orEmpty())
                         val name = c.getString(1).orEmpty()
-                        if (name.isNotBlank()) added.forEach { cfg.names[it] = name }
+                        if (name.isNotBlank()) r.added.forEach { cfg.names[it] = name }
+                        reportAdd(ctx, r)
                         cfg.save()
                         clearFinished()
                     }
@@ -506,6 +886,46 @@ private fun RedialScreen() {
             }
         }
     }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val text = readUri(ctx, uri)
+            if (text.isNullOrBlank()) {
+                Toast.makeText(ctx, "Could not read that file", Toast.LENGTH_SHORT).show()
+            } else {
+                ShareInbox.pending.value = text
+            }
+        }
+    }
+    val backupPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            val o = readUri(ctx, uri)?.let { t -> runCatching { JSONObject(t) }.getOrNull() }
+            if (o == null || !o.has("config")) {
+                Toast.makeText(ctx, "That file is not a Squeve Redail backup", Toast.LENGTH_LONG).show()
+            } else {
+                cfg.applyJson(o.getJSONObject("config"))
+                o.optJSONArray("lists")?.let { ListStore.replaceAll(prefs, it) }
+                cfg.save()
+                Toast.makeText(ctx, "Backup restored", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val unlockLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            LockState.lastUnlock = System.currentTimeMillis()
+            LockState.locked.value = false
+        }
+    }
+
+    fun requestUnlock() {
+        val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        val i = km.createConfirmDeviceCredentialIntent("Squeve Redail", "Unlock to continue")
+        if (i == null) {
+            LockState.locked.value = false
+        } else {
+            unlockLauncher.launch(i)
+        }
+    }
+    LaunchedEffect(locked) { if (locked) requestUnlock() }
 
     fun openCallLog() {
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CALL_LOG) ==
@@ -529,101 +949,199 @@ private fun RedialScreen() {
             return
         }
         // One-time prompt for the floating controls.
-        if (!Settings.canDrawOverlays(ctx) && !prefs.getBoolean("overlayAsked", false)) {
+        if (!cfg.dryRun && !Settings.canDrawOverlays(ctx) && !prefs.getBoolean("overlayAsked", false)) {
             prefs.edit().putBoolean("overlayAsked", true).apply()
             Toast.makeText(ctx, "Allow 'Display over other apps', then press START again", Toast.LENGTH_LONG).show()
             openSettings(ctx, Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
             return
         }
         cfg.save()
-        RedialService.pendingQueue = cfg.numbers.map {
-            RedialJob(
-                number = it,
-                attempts = cfg.callsFor(it),
-                gapMs = cfg.gapFor(it) * 1000L,
-                hangUpAfterMs = cfg.hangUpFor(it)?.let { sec -> sec * 1000L },
-                stopOnConnected = cfg.skipAnswered,
-                speaker = cfg.speakerOn,
-                muteMic = cfg.muteOn,
-            )
-        }
-        RedialService.pendingOrder = cfg.order
-        RedialService.pendingSim = sims.firstOrNull { it.slot == cfg.simSlot }   // null = phone default
-        ctx.startForegroundService(Intent(ctx, RedialService::class.java).setAction(RedialService.ACTION_START))
+        clearFinished()
+        RunLauncher.start(ctx, cfg.buildPlan())
     }
 
-    editIndex?.let { i ->
-        val n = cfg.numbers.getOrNull(i)
-        if (n != null) {
-            TargetDialog(
-                number = n, name = cfg.names[n], current = cfg.overrides[n],
-                defCalls = cfg.calls, defHangUp = if (cfg.limitOn) cfg.durSec else null, defGap = cfg.gapSec,
-                onSave = { ov ->
-                    if (ov == null) cfg.overrides.remove(n) else cfg.overrides[n] = ov
-                    cfg.save()
-                    editIndex = null
-                },
-                onDismiss = { editIndex = null },
-            )
-        }
-    }
+    val actions = DialActions(
+        add = { raw ->
+            val r = addChecked(cfg, raw)
+            reportAdd(ctx, r)
+            cfg.save()
+            clearFinished()
+        },
+        contacts = {
+            contactPicker.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI))
+        },
+        callLog = { openCallLog() },
+        paste = {
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip
+            val text = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).coerceToText(ctx)?.toString() else null
+            if (text.isNullOrBlank()) {
+                Toast.makeText(ctx, "The clipboard is empty", Toast.LENGTH_SHORT).show()
+            } else {
+                ShareInbox.pending.value = text
+            }
+        },
+        importFile = { filePicker.launch("*/*") },
+        edit = { editIndex = it },
+        saveList = { showSave = true },
+        lists = { showLists = true },
+        schedule = { showSchedule = true },
+        cancelSchedule = {
+            Scheduler.cancel(ctx)
+            uiTick++
+        },
+        resume = {
+            val plan = checkpoint?.let { RunStore.remainingPlan(it) }
+            if (plan != null) RunLauncher.start(ctx, plan)
+        },
+        discardResume = {
+            RunStore.clearCheckpoint(ctx)
+            uiTick++
+        },
+        retry = { nums -> RunLauncher.start(ctx, RunPlan(cfg.buildJobs(nums), cfg.order, cfg.simSlot, false)) },
+        export = {
+            scope.launch {
+                val f = withContext(Dispatchers.IO) { HistoryStore.exportCsv(ctx) }
+                shareFile(ctx, f, "text/csv")
+            }
+        },
+    )
 
-    if (showLog) {
-        CallLogDialog(
-            queued = cfg.numbers,
-            onDismiss = { showLog = false },
-            onAdd = { picks ->
-                picks.forEach { e ->
-                    cfg.numbers.add(e.number)
-                    if (e.name.isNotBlank()) cfg.names[e.number] = e.name
-                }
-                cfg.save()
-                clearFinished()
-                showLog = false
-            },
-        )
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Header(running)
-        AnimatedContent(
-            targetState = tab,
-            modifier = Modifier.weight(1f),
-            transitionSpec = {
-                val dir = if (targetState > initialState) 1 else -1
-                (fadeIn(tween(170)) + slideInHorizontally(tween(210)) { dir * it / 10 }) togetherWith
-                    (fadeOut(tween(110)) + slideOutHorizontally(tween(210)) { -dir * it / 10 })
-            },
-            label = "tabs",
-        ) { t ->
-            when (t) {
-                0 -> DialTab(
-                    cfg = cfg, sims = sims, running = running,
-                    onContacts = {
-                        contactPicker.launch(
-                            Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI),
-                        )
+    if (locked) {
+        LockScreen(onUnlock = { requestUnlock() })
+    } else {
+        // ───── dialogs ─────
+        editIndex?.let { i ->
+            val n = cfg.numbers.getOrNull(i)
+            if (n != null) {
+                TargetDialog(
+                    number = n, name = cfg.names[n], current = cfg.overrides[n],
+                    defCalls = cfg.calls, defHangUp = if (cfg.limitOn) cfg.durSec else null, defGap = cfg.gapSec,
+                    onSave = { ov ->
+                        if (ov == null) cfg.overrides.remove(n) else cfg.overrides[n] = ov
+                        cfg.save()
+                        editIndex = null
                     },
-                    onCallLog = { openCallLog() },
-                    onEdit = { editIndex = it },
-                )
-                1 -> ConfigTab(cfg, running)
-                else -> SystemTab(
-                    granted = granted, refresh = refresh, running = running,
-                    onGrant = { permLauncher.launch(permsToRequest()) },
+                    onDismiss = { editIndex = null },
                 )
             }
         }
-        if (!imeOpen) {
-            ControlDock(
-                running = running,
-                onStart = { startRun() },
-                onPauseResume = { wasPaused ->
-                    sendAction(ctx, if (wasPaused) RedialService.ACTION_RESUME else RedialService.ACTION_PAUSE)
+        if (showLog) {
+            CallLogDialog(
+                queued = cfg.numbers,
+                onDismiss = { showLog = false },
+                onAdd = { picks ->
+                    picks.forEach { e ->
+                        cfg.numbers.add(e.number)
+                        if (e.name.isNotBlank()) cfg.names[e.number] = e.name
+                    }
+                    cfg.save()
+                    clearFinished()
+                    showLog = false
                 },
-                onStop = { sendAction(ctx, RedialService.ACTION_STOP) },
             )
-            TabBar(tab) { tab = it }
+        }
+        if (showSave) {
+            SaveListDialog(
+                onSave = { name ->
+                    ListStore.put(prefs, name, cfg.toJson(false))
+                    Toast.makeText(ctx, "Saved \"$name\"", Toast.LENGTH_SHORT).show()
+                    showSave = false
+                },
+                onDismiss = { showSave = false },
+            )
+        }
+        if (showLists) {
+            var listsTick by remember { mutableStateOf(0) }
+            val saved = remember(listsTick) { ListStore.all(prefs).map { it.first } }
+            ListsDialog(
+                lists = saved,
+                onLoad = { name ->
+                    ListStore.all(prefs).firstOrNull { it.first == name }?.let { cfg.applyJson(it.second) }
+                    cfg.save()
+                    clearFinished()
+                    showLists = false
+                },
+                onDelete = { name ->
+                    ListStore.remove(prefs, name)
+                    listsTick++
+                },
+                onDismiss = { showLists = false },
+            )
+        }
+        if (showSchedule) {
+            ScheduleDialog(
+                onSchedule = { atMs ->
+                    Scheduler.schedule(ctx, atMs, cfg.buildPlan().copy(dry = false))
+                    uiTick++
+                    showSchedule = false
+                    Toast.makeText(ctx, "Scheduled", Toast.LENGTH_SHORT).show()
+                },
+                onDismiss = { showSchedule = false },
+            )
+        }
+        inbox?.let { raw ->
+            ImportDialog(
+                raw = raw,
+                onAdd = { nums ->
+                    val r = addChecked(cfg, nums.joinToString(","))
+                    reportAdd(ctx, r)
+                    cfg.save()
+                    clearFinished()
+                    ShareInbox.pending.value = null
+                },
+                onDismiss = { ShareInbox.pending.value = null },
+            )
+        }
+
+        Column(Modifier.fillMaxSize()) {
+            Header(running)
+            AnimatedContent(
+                targetState = tab,
+                modifier = Modifier.weight(1f),
+                transitionSpec = {
+                    val dir = if (targetState > initialState) 1 else -1
+                    (fadeIn(tween(170)) + slideInHorizontally(tween(210)) { dir * it / 10 }) togetherWith
+                        (fadeOut(tween(110)) + slideOutHorizontally(tween(210)) { -dir * it / 10 })
+                },
+                label = "tabs",
+            ) { t ->
+                when (t) {
+                    0 -> DialTab(cfg, sims, running, checkpoint, scheduled, actions)
+                    1 -> LogTab(cfg)
+                    2 -> ConfigTab(cfg, running, sims.size)
+                    else -> SystemTab(
+                        granted = granted, refresh = refresh, running = running,
+                        onGrant = { permLauncher.launch(permsToRequest()) },
+                        onExportBackup = {
+                            scope.launch {
+                                val f = withContext(Dispatchers.IO) {
+                                    val o = JSONObject()
+                                        .put("app", "squeve-redail")
+                                        .put("config", cfg.toJson(true))
+                                        .put("lists", ListStore.toJson(prefs))
+                                    val dir = File(ctx.cacheDir, "exports").apply { mkdirs() }
+                                    File(dir, "squeve-redail-backup.json").also { it.writeText(o.toString(2)) }
+                                }
+                                shareFile(ctx, f, "application/json")
+                            }
+                        },
+                        onImportBackup = { backupPicker.launch("*/*") },
+                    )
+                }
+            }
+            if (!imeOpen) {
+                ControlDock(
+                    running = running,
+                    startLabel = if (cfg.dryRun) "START DRY RUN" else "START REDIAL",
+                    onStart = { startRun() },
+                    onPauseResume = { wasPaused ->
+                        sendAction(ctx, if (wasPaused) RedialService.ACTION_RESUME else RedialService.ACTION_PAUSE)
+                    },
+                    onStop = { sendAction(ctx, RedialService.ACTION_STOP) },
+                )
+                TabBar(tab) { tab = it }
+            }
         }
     }
 }
@@ -679,10 +1197,10 @@ private fun PulseDot(active: Boolean) {
     }
 }
 
-@Composable
 private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
     val items = listOf(
         Icons.Filled.Call to "DIAL",
+        Icons.Filled.DateRange to "LOG",
         Icons.Filled.Settings to "CONFIG",
         Icons.Filled.CheckCircle to "SYSTEM",
     )
@@ -699,7 +1217,7 @@ private fun TabBar(selected: Int, onSelect: (Int) -> Unit) {
                     Glyph(icon, tint, 22.dp)
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        label, fontFamily = Display, fontSize = 12.sp, letterSpacing = 3.sp,
+                        label, fontFamily = Display, fontSize = 11.sp, letterSpacing = 2.sp,
                         fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal, color = tint,
                     )
                     Spacer(Modifier.height(5.dp))
@@ -718,6 +1236,7 @@ private fun animateColor(target: Color): State<Color> =
 @Composable
 private fun ControlDock(
     running: Boolean,
+    startLabel: String,
     onStart: () -> Unit,
     onPauseResume: (Boolean) -> Unit,
     onStop: () -> Unit,
@@ -728,7 +1247,7 @@ private fun ControlDock(
         Box(Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             if (!running) {
                 NeonButton(
-                    "START REDIAL", strong = true,
+                    startLabel, strong = true,
                     icon = { Glyph(Icons.Filled.PlayArrow, it, 22.dp) },
                     onClick = onStart,
                 )
@@ -752,25 +1271,27 @@ private fun ControlDock(
 }
 
 // ───────────────────────── DIAL tab ─────────────────────────
-@Composable
 private fun DialTab(
     cfg: Config, sims: List<SimOption>, running: Boolean,
-    onContacts: () -> Unit, onCallLog: () -> Unit, onEdit: (Int) -> Unit,
+    checkpoint: Checkpoint?, scheduled: Scheduled?, a: DialActions,
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        HeroPanel(jobCount = cfg.numbers.size, totalCalls = cfg.numbers.sumOf { cfg.callsFor(it) }, names = cfg.names)
+        if (checkpoint != null) ResumeBanner(checkpoint, a.resume, a.discardResume)
+        if (scheduled != null) ScheduleBanner(scheduled, a.cancelSchedule)
+
+        HeroPanel(
+            jobCount = cfg.numbers.size,
+            totalCalls = cfg.numbers.sumOf { cfg.callsFor(it) },
+            names = cfg.names,
+        )
+        SummaryHost(cfg, a)
 
         GlassCard {
             SectionTitle("TARGETS")
-            AddNumberRow(
-                enabled = !running,
-                onAdd = { addNumbers(cfg.numbers, it); cfg.save(); clearFinished() },
-                onContacts = onContacts,
-                onCallLog = onCallLog,
-            )
+            AddNumberRow(enabled = !running, onAdd = a.add, a = a)
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -778,8 +1299,16 @@ private fun DialTab(
                     fontFamily = Mono, fontSize = 13.sp, letterSpacing = 3.sp, color = Dim,
                     modifier = Modifier.weight(1f),
                 )
-                if (!running && cfg.numbers.isNotEmpty()) {
-                    LinkButton("CLEAR") { cfg.numbers.clear(); cfg.save(); clearFinished() }
+                if (!running) {
+                    if (cfg.numbers.isNotEmpty()) LinkButton("SAVE LIST") { a.saveList() }
+                    LinkButton("LISTS") { a.lists() }
+                    if (cfg.numbers.isNotEmpty()) {
+                        LinkButton("CLEAR") {
+                            cfg.numbers.clear()
+                            cfg.save()
+                            clearFinished()
+                        }
+                    }
                 }
             }
             if (cfg.numbers.isEmpty()) {
@@ -789,12 +1318,16 @@ private fun DialTab(
                 )
             }
             if (!running && cfg.numbers.isNotEmpty()) {
-                Caption("Tap a number to give it its own calls, hang-up or interval.")
+                Caption("Tap a number to give it its own calls, hang-up, interval or audio.")
             }
             QueueList(
                 numbers = cfg.numbers, names = cfg.names, cfg = cfg, canEdit = !running,
-                onEdit = onEdit,
-                onRemove = { cfg.numbers.removeAt(it); cfg.save(); clearFinished() },
+                onEdit = a.edit,
+                onRemove = {
+                    cfg.numbers.removeAt(it)
+                    cfg.save()
+                    clearFinished()
+                },
             )
         }
 
@@ -826,6 +1359,12 @@ private fun DialTab(
 
             Spacer(Modifier.height(14.dp))
             Hairline()
+            ToggleRow(
+                "Dry run",
+                "Walk through the order and timing without placing any call.",
+                cfg.dryRun, !running,
+            ) { cfg.dryRun = it }
+            Hairline()
             Spacer(Modifier.height(12.dp))
 
             val total = cfg.numbers.sumOf { cfg.callsFor(it) }
@@ -841,10 +1380,11 @@ private fun DialTab(
                 val allLimited = cfg.numbers.all { cfg.hangUpFor(it) != null }
                 val timing = buildString {
                     append(if (cfg.limitOn) "${cfg.durSec}s hang-up" else "no hang-up limit")
-                    append(" · ${cfg.gapSec}s gap")
+                    append(if (cfg.gapRandom) " · ${cfg.gapSec}-${maxOf(cfg.gapMaxSec, cfg.gapSec)}s gap" else " · ${cfg.gapSec}s gap")
                     if (allLimited) {
+                        val avgGap = if (cfg.gapRandom) (cfg.gapSec + maxOf(cfg.gapMaxSec, cfg.gapSec)) / 2 else cfg.gapSec
                         val secs = cfg.numbers.sumOf { n ->
-                            cfg.callsFor(n).toLong() * ((cfg.hangUpFor(n) ?: 0) + cfg.gapFor(n))
+                            cfg.callsFor(n).toLong() * ((cfg.hangUpFor(n) ?: 0) + avgGap)
                         }
                         append(" · up to ~${spanText(secs)}")
                     }
@@ -852,6 +1392,12 @@ private fun DialTab(
                 Spacer(Modifier.height(4.dp))
                 Text(timing, fontFamily = Mono, fontSize = 12.sp, color = Dim)
             }
+            Spacer(Modifier.height(12.dp))
+            GhostButton(
+                "SCHEDULE START",
+                enabled = !running && cfg.numbers.isNotEmpty(),
+                icon = { Glyph(Icons.Filled.DateRange, it, 16.dp) },
+            ) { a.schedule() }
         }
         Spacer(Modifier.height(8.dp))
     }
@@ -866,6 +1412,8 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
     val p = status.progress()
     val finished = status is EngineState.Finished
     val inCall = status as? EngineState.InCall
+    val why by RedialService.waitReason.collectAsState()
+    val isDry by RedialService.dry.collectAsState()
 
     val fraction = when {
         finished -> 1f
@@ -890,7 +1438,7 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
         is EngineState.Dialing -> "DIALING"
         is EngineState.InCall -> "IN CALL"
         is EngineState.Cooldown -> "COOLDOWN"
-        is EngineState.Paused -> "PAUSED"
+        is EngineState.Paused -> if (why != null) "WAITING" else "PAUSED"
         is EngineState.Finished -> "COMPLETE"
         is EngineState.Idle -> "READY"
     }
@@ -930,7 +1478,7 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 3.sp,
+                        if (isDry && running) "DRY · $label" else label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 3.sp,
                         color = if (running) Cyan else Dim,
                     )
                     PercentText(animated)
@@ -975,6 +1523,13 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
             if (paused && running && status !is EngineState.Paused) {
                 Spacer(Modifier.height(6.dp))
                 Text("PAUSING AFTER THIS CALL", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 2.sp, color = Magenta)
+            }
+            if (why != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "WAITING · " + why!!.uppercase(), fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.sp,
+                    color = Magenta, textAlign = TextAlign.Center,
+                )
             }
         }
     }
@@ -1034,13 +1589,7 @@ private fun CooldownText(untilMs: Long) {
 }
 
 // ───────────────────────── Queue ─────────────────────────
-@Composable
-private fun AddNumberRow(
-    enabled: Boolean,
-    onAdd: (String) -> Unit,
-    onContacts: () -> Unit,
-    onCallLog: () -> Unit,
-) {
+private fun AddNumberRow(enabled: Boolean, onAdd: (String) -> Unit, a: DialActions) {
     // Keystrokes only recompose this row, not the whole screen. Saved so tab switches keep the text.
     var input by rememberSaveable { mutableStateOf("") }
     OutlinedTextField(
@@ -1056,28 +1605,35 @@ private fun AddNumberRow(
         modifier = Modifier.fillMaxWidth(),
     )
     Spacer(Modifier.height(10.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        NeonButton(
-            "ADD", enabled = enabled && input.isNotBlank(),
-            modifier = Modifier.weight(0.8f),
-            icon = { Glyph(Icons.Filled.Add, it, 18.dp) },
-        ) {
-            onAdd(input)
-            input = ""
-        }
-        GhostButton(
-            "CONTACTS", enabled = enabled,
-            modifier = Modifier.weight(1.1f).height(48.dp),
-            icon = { Glyph(Icons.Filled.Person, it, 16.dp) },
-            onClick = onContacts,
-        )
-        GhostButton(
-            "CALL LOG", enabled = enabled,
-            modifier = Modifier.weight(1.1f).height(48.dp),
-            icon = { Glyph(Icons.Filled.Call, it, 16.dp) },
-            onClick = onCallLog,
-        )
+    NeonButton(
+        "ADD TO QUEUE", enabled = enabled && input.isNotBlank(),
+        icon = { Glyph(Icons.Filled.Add, it, 20.dp) },
+    ) {
+        onAdd(input)
+        input = ""
     }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SourceButton("CONTACTS", Icons.Filled.Person, enabled, Modifier.weight(1f), a.contacts)
+        SourceButton("CALL LOG", Icons.Filled.Call, enabled, Modifier.weight(1f), a.callLog)
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        SourceButton("PASTE", Icons.Filled.Create, enabled, Modifier.weight(1f), a.paste)
+        SourceButton("IMPORT FILE", Icons.Filled.Share, enabled, Modifier.weight(1f), a.importFile)
+    }
+}
+
+@Composable
+private fun SourceButton(
+    label: String, icon: ImageVector, enabled: Boolean, modifier: Modifier, onClick: () -> Unit,
+) {
+    GhostButton(
+        label, enabled = enabled,
+        modifier = modifier.height(44.dp),
+        icon = { Glyph(icon, it, 16.dp) },
+        onClick = onClick,
+    )
 }
 
 @Composable
@@ -1210,8 +1766,7 @@ private fun MiniBar(fraction: Float) {
 }
 
 // ───────────────────────── CONFIG tab ─────────────────────────
-@Composable
-private fun ConfigTab(cfg: Config, running: Boolean) {
+private fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
     val ctx = LocalContext.current
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
@@ -1231,6 +1786,31 @@ private fun ConfigTab(cfg: Config, running: Boolean) {
             StepperRow("Calls per number", cfg.calls, 1..500, !running, { "$it" }) { cfg.calls = it }
             Hairline()
             StepperRow("Interval between calls", cfg.gapSec, 1..300, !running, { "${it}s" }) { cfg.gapSec = it }
+            ToggleRow(
+                "Random interval", "Pick a different wait each time, between the interval and the limit below.",
+                cfg.gapRandom, !running,
+            ) { cfg.gapRandom = it }
+            if (cfg.gapRandom) {
+                StepperRow("Up to", maxOf(cfg.gapMaxSec, cfg.gapSec), cfg.gapSec..600, !running, { "${it}s" }) {
+                    cfg.gapMaxSec = it
+                }
+            }
+        }
+
+        GlassCard {
+            SectionTitle("ANSWERS")
+            StepperRow("Count as answered after", cfg.answerSec, 1..60, !running, { "${it}s" }) { cfg.answerSec = it }
+            Caption("Android only reveals call length. If your phone logs ring time as call time, raise this.")
+            Spacer(Modifier.height(8.dp))
+            Hairline()
+            ToggleRow(
+                "Skip to next number once answered",
+                "Stops calling a number after it has been answered.",
+                cfg.skipAnswered, !running,
+            ) { cfg.skipAnswered = it }
+            if (cfg.skipAnswered) {
+                StepperRow("Answers needed", cfg.answersToStop, 1..10, !running, { "$it" }) { cfg.answersToStop = it }
+            }
         }
 
         GlassCard {
@@ -1243,13 +1823,67 @@ private fun ConfigTab(cfg: Config, running: Boolean) {
             ) { cfg.muteOn = it }
         }
 
+        if (simCount > 1) {
+            GlassCard {
+                SectionTitle("SIM STRATEGY")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("FIXED", "FALL BACK", "ALTERNATE").forEachIndexed { i, label ->
+                        SegChip(label, cfg.simMode == i, !running, Modifier.weight(1f)) { cfg.simMode = i }
+                    }
+                }
+                Caption(
+                    when (cfg.simMode) {
+                        1 -> "Uses your chosen SIM. If a call can't start, the other SIM tries it."
+                        2 -> "Swaps SIM on every call, starting with your chosen one."
+                        else -> "Every call uses the SIM chosen on the DIAL tab."
+                    },
+                )
+            }
+        }
+
+        GlassCard {
+            SectionTitle("SAFETY")
+            StepperRow("Daily call cap", cfg.dailyCap, 0..2000, !running, { if (it == 0) "OFF" else "$it" }) {
+                cfg.dailyCap = it
+            }
+            Caption("Ends a run once this many calls have been placed today.")
+            Spacer(Modifier.height(8.dp))
+            Hairline()
+            ToggleRow("Quiet hours", "Waits instead of calling during these hours.", cfg.quietOn, !running) {
+                cfg.quietOn = it
+            }
+            if (cfg.quietOn) {
+                StepperRow("From", cfg.quietStart / 15, 0..95, !running, { hm(it * 15) }) { cfg.quietStart = it * 15 }
+                StepperRow("Until", cfg.quietEnd / 15, 0..95, !running, { hm(it * 15) }) { cfg.quietEnd = it * 15 }
+            }
+            Hairline()
+            ToggleRow(
+                "Pause on low battery", "Waits below 15% until the phone is charging.",
+                cfg.batteryPause, !running,
+            ) { cfg.batteryPause = it }
+            Caption("A run also waits by itself in airplane mode, with no signal, or while you are on another call.")
+        }
+
         GlassCard {
             SectionTitle("BEHAVIOUR")
-            ToggleRow(
-                "Skip to next number if answered",
-                "Off by default: some phones log ring time as call time, so this can skip too early.",
-                cfg.skipAnswered, !running,
-            ) { cfg.skipAnswered = it }
+            ToggleRow("Alert when a run finishes", "Sound and vibration with a notification.", cfg.alertOn, true) {
+                cfg.alertOn = it
+            }
+            ToggleRow("Allow duplicate numbers", "Off: a number already in the queue is skipped.", cfg.allowDup, true) {
+                cfg.allowDup = it
+            }
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = cfg.countryCode,
+                onValueChange = { cfg.countryCode = it.filter { c -> c.isDigit() }.take(4) },
+                label = { Text("Country code for local numbers, e.g. 233") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                colors = fieldColors(),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Caption("Numbers starting with 0 become +code… when this is set.")
         }
 
         GlassCard {
@@ -1270,6 +1904,51 @@ private fun ConfigTab(cfg: Config, running: Boolean) {
                     showBubblePreview(ctx)
                 } else {
                     Toast.makeText(ctx, "Enable floating control in the SYSTEM tab first", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        GlassCard {
+            SectionTitle("APPEARANCE")
+            FieldLabel("SIZE")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("COMPACT", "NORMAL", "LARGE").forEachIndexed { i, label ->
+                    SegChip(label, cfg.uiSize == i, true, Modifier.weight(1f)) { cfg.uiSize = i }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            FieldLabel("ACCENT")
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                ACCENTS.forEachIndexed { i, a ->
+                    val sel = cfg.accentIdx == i
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .pressable { cfg.accentIdx = i }
+                            .clip(CircleShape)
+                            .background(Brush.linearGradient(listOf(a.main, a.second)))
+                            .border(if (sel) 3.dp else 1.dp, if (sel) Color.White else Hair, CircleShape),
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            ToggleRow("Pure black", "Deeper background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
+        }
+
+        GlassCard {
+            SectionTitle("PRIVACY")
+            ToggleRow(
+                "Lock the app",
+                "Asks for your phone's PIN, pattern or fingerprint when you come back to the app.",
+                cfg.lockOn, true,
+            ) { want ->
+                val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                if (!want) {
+                    cfg.lockOn = false
+                } else if (km.isDeviceSecure) {
+                    cfg.lockOn = true
+                } else {
+                    Toast.makeText(ctx, "Set a screen lock on your phone first", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -1366,14 +2045,21 @@ private fun ToggleRow(
 }
 
 // ───────────────────────── SYSTEM tab ─────────────────────────
-@Composable
-private fun SystemTab(granted: Boolean, refresh: Int, running: Boolean, onGrant: () -> Unit) {
+private fun SystemTab(
+    granted: Boolean,
+    refresh: Int,
+    running: Boolean,
+    onGrant: () -> Unit,
+    onExportBackup: () -> Unit,
+    onImportBackup: () -> Unit,
+) {
     val ctx = LocalContext.current
     val overlayOk = remember(refresh) { Settings.canDrawOverlays(ctx) }
     val batteryOk = remember(refresh) {
         (ctx.getSystemService(Context.POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(ctx.packageName)
     }
     val installOk = remember(refresh) { Updater.canInstall(ctx) }
+    val exactOk = remember(refresh) { Scheduler.canBeExact(ctx) }
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
@@ -1392,9 +2078,27 @@ private fun SystemTab(granted: Boolean, refresh: Int, running: Boolean, onGrant:
             ) { openSettings(ctx, Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS) }
             Hairline()
             StatusRow(
+                "Exact alarms", "Scheduled runs start on the minute", exactOk, "ALLOW",
+            ) { openSettings(ctx, Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM) }
+            Hairline()
+            StatusRow(
                 "Install updates", "Lets the app update itself", installOk, "ALLOW",
             ) { Updater.openInstallSettings(ctx) }
         }
+
+        GlassCard {
+            SectionTitle("BACKUP")
+            Text(
+                "Save your settings, queue and saved lists to a file, or restore them on this or another phone.",
+                fontSize = 12.sp, color = Dim,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                GhostButton("EXPORT", modifier = Modifier.weight(1f).height(48.dp), onClick = onExportBackup)
+                GhostButton("RESTORE", modifier = Modifier.weight(1f).height(48.dp), onClick = onImportBackup)
+            }
+        }
+
         UpdateCard(running)
         Spacer(Modifier.height(8.dp))
     }
@@ -1794,7 +2498,6 @@ private fun CheckMark(selected: Boolean, disabled: Boolean) {
 }
 
 // ───────────────────────── Per-number settings ─────────────────────────
-@Composable
 private fun TargetDialog(
     number: String,
     name: String?,
@@ -1820,13 +2523,16 @@ private fun TargetDialog(
     var hang by remember { mutableStateOf(current?.hangUp?.takeIf { it > 0 } ?: (defHangUp ?: 30)) }
     var gapOn by remember { mutableStateOf(current?.gap != null) }
     var gap by remember { mutableStateOf(current?.gap ?: defGap) }
+    // 0 = follow default, 1 = on, 2 = off
+    var spk by remember { mutableStateOf(when (current?.speaker) { null -> 0; true -> 1; false -> 2 }) }
+    var mut by remember { mutableStateOf(when (current?.mute) { null -> 0; true -> 1; false -> 2 }) }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             color = Color(0xFF0E1628),
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
-            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 600.dp),
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 620.dp),
         ) {
             Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 SectionTitle("TARGET SETTINGS")
@@ -1862,6 +2568,22 @@ private fun TargetDialog(
                 if (gapOn) {
                     StepperRow("Interval", gap, 1..300, true, { "${it}s" }) { gap = it }
                 }
+                Hairline()
+
+                Spacer(Modifier.height(12.dp))
+                FieldLabel("SPEAKER")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SegChip("DEFAULT", spk == 0, true, Modifier.weight(1f)) { spk = 0 }
+                    SegChip("ON", spk == 1, true, Modifier.weight(1f)) { spk = 1 }
+                    SegChip("OFF", spk == 2, true, Modifier.weight(1f)) { spk = 2 }
+                }
+                Spacer(Modifier.height(12.dp))
+                FieldLabel("MICROPHONE MUTE")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SegChip("DEFAULT", mut == 0, true, Modifier.weight(1f)) { mut = 0 }
+                    SegChip("MUTED", mut == 1, true, Modifier.weight(1f)) { mut = 1 }
+                    SegChip("OPEN", mut == 2, true, Modifier.weight(1f)) { mut = 2 }
+                }
 
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1875,11 +2597,495 @@ private fun TargetDialog(
                                 else -> null
                             },
                             gap = if (gapOn) gap else null,
+                            speaker = when (spk) {
+                                1 -> true
+                                2 -> false
+                                else -> null
+                            },
+                            mute = when (mut) {
+                                1 -> true
+                                2 -> false
+                                else -> null
+                            },
                         )
-                        onSave(if (ov.calls == null && ov.hangUp == null && ov.gap == null) null else ov)
+                        val empty = ov.calls == null && ov.hangUp == null && ov.gap == null &&
+                            ov.speaker == null && ov.mute == null
+                        onSave(if (empty) null else ov)
                     }
                 }
             }
         }
+    }
+}
+
+
+
+// ───────────────────────── Banners and run summary ─────────────────────────
+@Composable
+private fun ResumeBanner(cp: Checkpoint, onResume: () -> Unit, onDiscard: () -> Unit) {
+    GlassCard {
+        SectionTitle("UNFINISHED RUN")
+        Text(
+            "${cp.doneCalls} of ${cp.totalCalls} calls were done when the last run stopped.",
+            fontSize = 13.sp, color = Dim,
+        )
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            GhostButton("DISCARD", modifier = Modifier.weight(1f).height(48.dp), onClick = onDiscard)
+            NeonButton(
+                "RESUME", modifier = Modifier.weight(1f),
+                icon = { Glyph(Icons.Filled.PlayArrow, it, 20.dp) },
+                onClick = onResume,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScheduleBanner(s: Scheduled, onCancel: () -> Unit) {
+    val whenText = remember(s.atMs) {
+        SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(s.atMs))
+    }
+    GlassCard {
+        SectionTitle("SCHEDULED")
+        Text(whenText, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+        Text(
+            "${s.plan.jobs.size} targets · ${s.plan.jobs.sumOf { it.attempts }} calls",
+            fontSize = 12.sp, color = Dim,
+        )
+        Spacer(Modifier.height(10.dp))
+        GhostButton("CANCEL SCHEDULE", modifier = Modifier.fillMaxWidth().height(44.dp), onClick = onCancel)
+    }
+}
+
+/** Own composable so the rest of the DIAL tab does not recompose on every engine state change. */
+@Composable
+private fun SummaryHost(cfg: Config, a: DialActions) {
+    val status by RedialService.status.collectAsState()
+    val isDry by RedialService.dry.collectAsState()
+    val s = status
+    if (s is EngineState.Finished && s.results.isNotEmpty()) {
+        SummaryCard(
+            results = s.results, names = cfg.names, answerSec = cfg.answerSec, dry = isDry,
+            onRetry = a.retry, onExport = a.export, onDismiss = { clearFinished() },
+        )
+    }
+}
+
+@Composable
+private fun StatTile(label: String, value: String, color: Color, modifier: Modifier) {
+    Column(modifier) {
+        Text(value, fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 24.sp, color = color)
+        Text(label, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.sp, color = Dim)
+    }
+}
+
+@Composable
+private fun SummaryCard(
+    results: List<AttemptResult>,
+    names: Map<String, String>,
+    answerSec: Int,
+    dry: Boolean,
+    onRetry: (List<String>) -> Unit,
+    onExport: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val answered = results.count { it.outcome == AttemptOutcome.CONNECTED }
+    val noAnswer = results.count { it.outcome == AttemptOutcome.NO_ANSWER }
+    val failed = results.count { it.outcome == AttemptOutcome.FAILED_TO_START }
+    val perNumber = results.groupBy { it.number }
+    val unanswered = perNumber.filter { e -> e.value.none { it.outcome == AttemptOutcome.CONNECTED } }.keys.toList()
+
+    GlassCard {
+        SectionTitle(if (dry) "DRY RUN RESULTS" else "RESULTS")
+        if (dry) {
+            Row {
+                StatTile("CALLS", "${results.size}", Color.White, Modifier.weight(1f))
+                StatTile("NUMBERS", "${perNumber.size}", Cyan, Modifier.weight(1f))
+            }
+        } else {
+            Row {
+                StatTile("PLACED", "${results.size}", Color.White, Modifier.weight(1f))
+                StatTile("ANSWERED", "$answered", Mint, Modifier.weight(1f))
+                StatTile("NO ANSWER", "$noAnswer", Dim, Modifier.weight(1f))
+                StatTile("FAILED", "$failed", Magenta, Modifier.weight(1f))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Hairline()
+        perNumber.entries.take(30).forEach { (n, list) ->
+            val ok = list.count { it.outcome == AttemptOutcome.CONNECTED }
+            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(n, fontFamily = Mono, fontSize = 14.sp, color = Color.White)
+                    val who = names[n]
+                    if (who != null) Text(who, fontSize = 11.sp, color = Dim, maxLines = 1)
+                }
+                Text(
+                    if (dry) "${list.size} calls" else "${list.size} calls · $ok answered",
+                    fontFamily = Mono, fontSize = 11.sp, color = if (ok > 0) Mint else Dim,
+                )
+            }
+        }
+        if (perNumber.size > 30) Caption("+ ${perNumber.size - 30} more numbers are in the history.")
+        if (!dry) Caption("Answered means the call log showed at least ${answerSec}s. Change it in CONFIG.")
+        Spacer(Modifier.height(12.dp))
+        if (!dry) {
+            NeonButton(
+                "RETRY ${unanswered.size} UNANSWERED", enabled = unanswered.isNotEmpty(),
+                icon = { Glyph(Icons.Filled.Refresh, it, 18.dp) },
+            ) { onRetry(unanswered) }
+            Spacer(Modifier.height(8.dp))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (!dry) GhostButton("EXPORT CSV", modifier = Modifier.weight(1f).height(44.dp), onClick = onExport)
+            GhostButton("DISMISS", modifier = Modifier.weight(1f).height(44.dp), onClick = onDismiss)
+        }
+    }
+}
+
+// ───────────────────────── LOG tab ─────────────────────────
+@Composable
+private fun LogTab(cfg: Config) {
+    var mode by rememberSaveable { mutableStateOf(0) }   // 0 live, 1 history
+    Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            SegChip("LIVE", mode == 0, true, Modifier.weight(1f)) { mode = 0 }
+            SegChip("HISTORY", mode == 1, true, Modifier.weight(1f)) { mode = 1 }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (mode == 0) {
+            EventFeed(Modifier.weight(1f))
+        } else {
+            HistoryList(cfg, Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun EventFeed(modifier: Modifier) {
+    val lines by EventLog.lines.collectAsState()
+    val listState = rememberLazyListState()
+    LaunchedEffect(lines.size) {
+        if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
+    }
+    val shape = RoundedCornerShape(16.dp)
+    Box(modifier.fillMaxWidth().clip(shape).background(Panel).border(1.dp, Hair, shape)) {
+        if (lines.isEmpty()) {
+            Text(
+                "Nothing yet. What the engine is doing shows up here while a run is going.",
+                fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp),
+            )
+        } else {
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                items(lines.size) { i ->
+                    val line = lines[i]
+                    val color = when {
+                        line.contains("answered") && !line.contains("no answer") -> Mint
+                        line.contains("no answer") || line.contains("Stopped") || line.contains("Waiting") ||
+                            line.contains("Could not") || line.contains("did not start") -> Magenta
+                        line.contains("Dialing") -> Cyan
+                        else -> Dim
+                    }
+                    Text(line, fontFamily = Mono, fontSize = 11.5.sp, color = color, modifier = Modifier.padding(vertical = 2.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryList(cfg: Config, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var reload by remember { mutableStateOf(0) }
+    var filter by remember { mutableStateOf(0) }       // 0 all, 1 answered, 2 no answer, 3 failed
+    var confirmClear by remember { mutableStateOf(false) }
+    val records by produceState<List<HistoryRecord>?>(null, reload) {
+        value = withContext(Dispatchers.IO) { HistoryStore.load(ctx, 600) }
+    }
+
+    Column(modifier) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf("ALL", "ANSWERED", "NO ANS", "FAILED").forEachIndexed { i, label ->
+                SegChip(label, filter == i, true, Modifier.weight(1f)) { filter = i }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+
+        val all = records
+        val shown = (all ?: emptyList()).filter {
+            when (filter) {
+                1 -> it.outcome == "CONNECTED"
+                2 -> it.outcome == "NO_ANSWER"
+                3 -> it.outcome == "FAILED_TO_START"
+                else -> true
+            }
+        }
+        val shape = RoundedCornerShape(16.dp)
+        Box(Modifier.weight(1f).fillMaxWidth().clip(shape).background(Panel).border(1.dp, Hair, shape)) {
+            when {
+                all == null -> Text("Loading…", fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp))
+                shown.isEmpty() -> Text(
+                    "No calls here yet. Every real call is recorded once a run places it.",
+                    fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp),
+                )
+                else -> LazyColumn(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 6.dp)) {
+                    items(shown) { r -> HistoryRow(r, cfg.names[r.number]) }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            GhostButton(
+                if (confirmClear) "TAP AGAIN" else "CLEAR",
+                modifier = Modifier.weight(1f).height(48.dp),
+            ) {
+                if (confirmClear) {
+                    scope.launch {
+                        withContext(Dispatchers.IO) { HistoryStore.clear(ctx) }
+                        confirmClear = false
+                        reload++
+                    }
+                } else {
+                    confirmClear = true
+                }
+            }
+            NeonButton("EXPORT CSV", modifier = Modifier.weight(1f)) {
+                scope.launch {
+                    val f = withContext(Dispatchers.IO) { HistoryStore.exportCsv(ctx) }
+                    shareFile(ctx, f, "text/csv")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryRow(r: HistoryRecord, name: String?) {
+    val fmt = remember { SimpleDateFormat("d MMM · HH:mm:ss", Locale.getDefault()) }
+    val (label, color) = when (r.outcome) {
+        "CONNECTED" -> "ANSWERED" to Mint
+        "NO_ANSWER" -> "NO ANSWER" to Dim
+        "FAILED_TO_START" -> "FAILED" to Magenta
+        else -> "CALL" to Dim
+    }
+    val shownName = r.name.ifBlank { name.orEmpty() }
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(r.number, fontFamily = Mono, fontSize = 14.sp, color = Color.White)
+            if (shownName.isNotBlank()) Text(shownName, fontSize = 11.sp, color = Cyan, maxLines = 1)
+            Text(
+                fmt.format(Date(r.ts)) + (if (r.sim >= 0) " · SIM ${r.sim + 1}" else ""),
+                fontFamily = Mono, fontSize = 10.sp, color = Dim,
+            )
+        }
+        Column(horizontalAlignment = Alignment.End) {
+            Text(label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.sp, color = color)
+            Text("${r.durationSec}s", fontFamily = Mono, fontSize = 11.sp, color = Dim)
+        }
+    }
+    Hairline()
+}
+
+// ───────────────────────── Dialogs ─────────────────────────
+@Composable
+private fun SaveListDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf("") }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                SectionTitle("SAVE LIST")
+                Caption("Saves these numbers with their names, custom settings and run settings.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(40) },
+                    label = { Text("List name") },
+                    singleLine = true,
+                    colors = fieldColors(),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GhostButton("CANCEL", modifier = Modifier.weight(1f).height(48.dp), onClick = onDismiss)
+                    NeonButton("SAVE", enabled = name.isNotBlank(), modifier = Modifier.weight(1f)) {
+                        onSave(name.trim())
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ListsDialog(
+    lists: List<String>,
+    onLoad: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 520.dp),
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                SectionTitle("SAVED LISTS")
+                if (lists.isEmpty()) {
+                    Text(
+                        "Nothing saved yet. Use SAVE LIST on the DIAL tab.",
+                        fontFamily = Mono, fontSize = 12.sp, color = Dim,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                } else {
+                    Caption("Tap a list to load it. Loading replaces the current queue.")
+                    Spacer(Modifier.height(8.dp))
+                    LazyColumn(Modifier.weight(1f, fill = false)) {
+                        items(lists) { name ->
+                            val shape = RoundedCornerShape(12.dp)
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp)
+                                    .clip(shape)
+                                    .border(1.dp, Hair, shape)
+                                    .pressable { onLoad(name) }
+                                    .padding(start = 14.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(name, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                                Box(
+                                    Modifier.size(40.dp).clip(CircleShape).pressable { onDelete(name) },
+                                    contentAlignment = Alignment.Center,
+                                ) { Glyph(Icons.Filled.Close, Dim, 18.dp) }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                GhostButton("CLOSE", modifier = Modifier.fillMaxWidth().height(48.dp), onClick = onDismiss)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleDialog(onSchedule: (Long) -> Unit, onDismiss: () -> Unit) {
+    val nowCal = remember { Calendar.getInstance() }
+    var hour by remember { mutableStateOf((nowCal.get(Calendar.HOUR_OF_DAY) + 1) % 24) }
+    var minute by remember { mutableStateOf(0) }
+
+    fun target(): Long {
+        val c = Calendar.getInstance()
+        c.set(Calendar.HOUR_OF_DAY, hour)
+        c.set(Calendar.MINUTE, minute)
+        c.set(Calendar.SECOND, 0)
+        c.set(Calendar.MILLISECOND, 0)
+        if (c.timeInMillis <= System.currentTimeMillis()) c.add(Calendar.DAY_OF_YEAR, 1)
+        return c.timeInMillis
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 600.dp),
+        ) {
+            Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                SectionTitle("SCHEDULE START")
+                FieldLabel("START IN")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("5 MIN" to 5, "15 MIN" to 15, "30 MIN" to 30, "1 HOUR" to 60).forEach { (label, mins) ->
+                        SegChip(label, false, true, Modifier.weight(1f)) {
+                            onSchedule(System.currentTimeMillis() + mins * 60_000L)
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                Hairline()
+                Spacer(Modifier.height(10.dp))
+                FieldLabel("OR AT A TIME")
+                StepperRow("Hour", hour, 0..23, true, { "%02d".format(it) }) { hour = it }
+                StepperRow("Minute", minute, 0..59, true, { "%02d".format(it) }) { minute = it }
+                val at = target()
+                Caption(
+                    "Starts " + SimpleDateFormat("EEE d MMM, HH:mm", Locale.getDefault()).format(Date(at)) +
+                        ". The phone needs to be on; the app does the rest.",
+                )
+                Spacer(Modifier.height(14.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    GhostButton("CANCEL", modifier = Modifier.weight(1f).height(48.dp), onClick = onDismiss)
+                    NeonButton("SCHEDULE", modifier = Modifier.weight(1f)) { onSchedule(at) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportDialog(raw: String, onAdd: (List<String>) -> Unit, onDismiss: () -> Unit) {
+    val nums = remember(raw) { extractNumbers(raw) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = Color(0xFF0E1628),
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 560.dp),
+        ) {
+            Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
+                SectionTitle("IMPORT NUMBERS")
+                if (nums.isEmpty()) {
+                    Text("No phone numbers were found in that.", fontSize = 14.sp, color = Dim)
+                    Spacer(Modifier.height(14.dp))
+                    GhostButton("CLOSE", modifier = Modifier.fillMaxWidth().height(48.dp), onClick = onDismiss)
+                } else {
+                    Text(
+                        "Found ${nums.size} number" + (if (nums.size > 1) "s" else ""),
+                        fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    nums.take(8).forEach { Text(it, fontFamily = Mono, fontSize = 14.sp, color = Color.White) }
+                    if (nums.size > 8) Caption("+ ${nums.size - 8} more")
+                    Caption("Invalid numbers are skipped, and so are duplicates unless you allowed them.")
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        GhostButton("CANCEL", modifier = Modifier.weight(1f).height(48.dp), onClick = onDismiss)
+                        NeonButton("ADD ${nums.size}", modifier = Modifier.weight(1f)) { onAdd(nums) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LockScreen(onUnlock: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Glyph(Icons.Filled.Lock, Cyan, 44.dp)
+        Spacer(Modifier.height(16.dp))
+        Text("LOCKED", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 6.sp, color = Color.White)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Use your phone's screen lock to continue.",
+            fontSize = 13.sp, color = Dim, textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(24.dp))
+        NeonButton("UNLOCK", onClick = onUnlock)
     }
 }
