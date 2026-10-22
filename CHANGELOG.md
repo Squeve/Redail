@@ -10,6 +10,9 @@ Newest first. The top section is published as the release notes and shown in the
 - Notification buttons now match the moment: Resume while paused, Keep call or Auto hang-up during a timed call.
 - Updates: the app shows what is new before you install.
 - Version name now follows the build number.
+- Light theme, plus a "follow system" option (CONFIG > Appearance > Theme).
+- New notification icon (handset with redial arrow).
+- New app icon: white handset with a redial arrow on blue (with a themed-icon version).
 
 ## 0.14
 - Earlier work.

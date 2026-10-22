@@ -46,6 +46,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -164,6 +165,9 @@ private object Theming {
     val black = mutableStateOf(false)
     val size = mutableStateOf(1)           // 0 compact, 1 normal, 2 large
     val haptics = mutableStateOf(true)
+    val mode = mutableStateOf(0)           // 0 dark, 1 light, 2 follow the phone
+    val systemDark = mutableStateOf(true)
+    val light: Boolean get() = mode.value == 1 || (mode.value == 2 && !systemDark.value)
 
     fun setAccent(i: Int) {
         val a = ACCENTS[i.coerceIn(0, ACCENTS.size - 1)]
@@ -171,7 +175,10 @@ private object Theming {
         accent2.value = a.second
     }
 
-    fun load(prefs: SharedPreferences) {
+    fun load(prefs: SharedPreferences, ctx: Context) {
+        mode.value = prefs.getInt("themeMode", 0)
+        val night = ctx.resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        systemDark.value = night == android.content.res.Configuration.UI_MODE_NIGHT_YES
         setAccent(prefs.getInt("accent", 0))
         black.value = prefs.getBoolean("black", false)
         size.value = prefs.getInt("uiSize", 1)
@@ -179,16 +186,43 @@ private object Theming {
     }
 }
 
-private val Ink: Color get() = if (Theming.black.value) Color.Black else Color(0xFF070B14)
-private val InkSoft: Color get() = if (Theming.black.value) Color(0xFF050505) else Color(0xFF0D1424)
-private val Panel: Color get() = if (Theming.black.value) Color(0xE60C0C0C) else Color(0xCC111A2C)
-private val Dock: Color get() = if (Theming.black.value) Color(0xFF000000) else Color(0xF00A1020)
-private val Cyan: Color get() = Theming.accent.value
-private val Violet: Color get() = Theming.accent2.value
+private val Ink: Color get() = when {
+    Theming.light -> Color(0xFFF3F6FC)
+    Theming.black.value -> Color.Black
+    else -> Color(0xFF070B14)
+}
+private val InkSoft: Color get() = when {
+    Theming.light -> Color(0xFFE7EDF8)
+    Theming.black.value -> Color(0xFF050505)
+    else -> Color(0xFF0D1424)
+}
+private val Panel: Color get() = when {
+    Theming.light -> Color(0xE6FFFFFF)
+    Theming.black.value -> Color(0xE60C0C0C)
+    else -> Color(0xCC111A2C)
+}
+private val Dock: Color get() = when {
+    Theming.light -> Color(0xF5FFFFFF)
+    Theming.black.value -> Color(0xFF000000)
+    else -> Color(0xF00A1020)
+}
+private val Cyan: Color get() =
+    if (Theming.light) androidx.compose.ui.graphics.lerp(Theming.accent.value, Color.Black, 0.42f) else Theming.accent.value
+private val Violet: Color get() =
+    if (Theming.light) androidx.compose.ui.graphics.lerp(Theming.accent2.value, Color.Black, 0.22f) else Theming.accent2.value
 private val Magenta = Color(0xFFFF2E93)
-private val Mint = Color(0xFF00E676)
-private val Dim = Color(0xFF8A9BB8)
-private val Hair: Color get() = if (Theming.black.value) Color(0xFF262626) else Color(0xFF22304A)
+private val Mint: Color get() = if (Theming.light) Color(0xFF00A152) else Color(0xFF00E676)
+private val Dim: Color get() = if (Theming.light) Color(0xFF5A6B88) else Color(0xFF8A9BB8)
+private val Hair: Color get() = when {
+    Theming.light -> Color(0xFFCBD5E8)
+    Theming.black.value -> Color(0xFF262626)
+    else -> Color(0xFF22304A)
+}
+/** Main text colour. */
+private val Fg: Color get() = if (Theming.light) Color(0xFF0B1220) else Color.White
+private val Soft: Color get() = if (Theming.light) Color(0xFF16213A) else Color(0xFFE6EEFF)
+private val DialogBg: Color get() = if (Theming.light) Color.White else Color(0xFF0E1628)
+private val Lilac: Color get() = if (Theming.light) Color(0xFF6A4DE0) else Color(0xFFB39DFF)
 
 /** The whole UI is drawn at this fraction of normal size (dp and sp together). */
 private const val UI_SCALE = 0.88f
@@ -224,17 +258,31 @@ private fun typographyWith(f: FontFamily): Typography {
     )
 }
 
-private fun schemeFor() = darkColorScheme(
-    primary = Cyan,
-    onPrimary = Ink,
-    background = Ink,
-    onBackground = Color(0xFFE6EEFF),
-    surface = Panel,
-    onSurface = Color(0xFFE6EEFF),
-    surfaceVariant = Panel,
-    onSurfaceVariant = Dim,
-    outline = Hair,
-)
+private fun schemeFor() = if (Theming.light) {
+    lightColorScheme(
+        primary = Cyan,
+        onPrimary = Ink,
+        background = Ink,
+        onBackground = Soft,
+        surface = Panel,
+        onSurface = Soft,
+        surfaceVariant = Panel,
+        onSurfaceVariant = Dim,
+        outline = Hair,
+    )
+} else {
+    darkColorScheme(
+        primary = Cyan,
+        onPrimary = Ink,
+        background = Ink,
+        onBackground = Soft,
+        surface = Panel,
+        onSurface = Soft,
+        surfaceVariant = Panel,
+        onSurfaceVariant = Dim,
+        outline = Hair,
+    )
+}
 
 /** Gradient, a soft cyan glow from the top and a faint grid. Drawn once, cheap. */
 private fun Modifier.techBackdrop(): Modifier = this.drawBehind {
@@ -509,6 +557,7 @@ private class Config(private val prefs: SharedPreferences) {
     var blackOn by mutableStateOf(prefs.getBoolean("black", false))
     var uiSize by mutableStateOf(prefs.getInt("uiSize", 1))
     var hapticsOn by mutableStateOf(prefs.getBoolean("haptics", true))
+    var themeMode by mutableStateOf(prefs.getInt("themeMode", 0))
 
     /** Not remembered between launches on purpose: a forgotten dry-run switch must never hide a real run. */
     var dryRun by mutableStateOf(false)
@@ -580,7 +629,7 @@ private class Config(private val prefs: SharedPreferences) {
     fun fingerprint(): List<Any?> = listOf(
         calls, gapSec, gapRandom, gapMaxSec, limitOn, durSec, skipAnswered, answersToStop, answerSec,
         speakerOn, muteOn, simSlot, simMode, order, bubbleLook, alertOn, dailyCap, quietOn, quietStart,
-        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn,
+        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn, themeMode,
     )
 
     fun save() {
@@ -608,7 +657,7 @@ private class Config(private val prefs: SharedPreferences) {
             .putString("countryCode", countryCode).putBoolean("allowDup", allowDup)
             .putBoolean("lockOn", lockOn)
             .putInt("accent", accentIdx).putBoolean("black", blackOn).putInt("uiSize", uiSize)
-            .putBoolean("haptics", hapticsOn)
+            .putBoolean("haptics", hapticsOn).putInt("themeMode", themeMode)
             .apply()
     }
 
@@ -645,6 +694,7 @@ private class Config(private val prefs: SharedPreferences) {
             put("black", blackOn)
             put("uiSize", uiSize)
             put("haptics", hapticsOn)
+            put("themeMode", themeMode)
         }
     }
 
@@ -688,6 +738,7 @@ private class Config(private val prefs: SharedPreferences) {
         blackOn = o.optBoolean("black", blackOn)
         uiSize = o.optInt("uiSize", uiSize)
         hapticsOn = o.optBoolean("haptics", hapticsOn)
+        themeMode = o.optInt("themeMode", themeMode)
     }
 }
 
@@ -761,7 +812,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("redail", Context.MODE_PRIVATE)
         Fonts.init(this)
-        Theming.load(prefs)
+        Theming.load(prefs, this)
         if (prefs.getBoolean("lockOn", false) && savedInstanceState == null) LockState.locked.value = true
         window.statusBarColor = Ink.toArgb()
         window.navigationBarColor = Ink.toArgb()
@@ -782,10 +833,17 @@ class MainActivity : ComponentActivity() {
             }
             val scaled = remember(base, factor) { Density(base.density * factor, base.fontScale.coerceAtMost(1f)) }
             val type = remember { typographyWith(Fonts.body) }
-            val scheme = remember(Theming.accent.value, Theming.black.value) { schemeFor() }
+            val isLight = Theming.light
+            val scheme = remember(Theming.accent.value, Theming.black.value, isLight) { schemeFor() }
+            val sysDark = isSystemInDarkTheme()
             SideEffect {
+                if (Theming.systemDark.value != sysDark) Theming.systemDark.value = sysDark
                 window.statusBarColor = Ink.toArgb()
                 window.navigationBarColor = Ink.toArgb()
+                window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Ink.toArgb()))
+                val bars = androidx.core.view.WindowCompat.getInsetsController(window, decor)
+                bars.isAppearanceLightStatusBars = isLight
+                bars.isAppearanceLightNavigationBars = isLight
             }
             CompositionLocalProvider(LocalDensity provides scaled) {
                 MaterialTheme(colorScheme = scheme, typography = type) {
@@ -793,7 +851,7 @@ class MainActivity : ComponentActivity() {
                         Surface(
                             Modifier.fillMaxSize(),
                             color = Color.Transparent,
-                            contentColor = Color(0xFFE6EEFF),
+                            contentColor = Soft,
                         ) { RedialScreen() }
                     }
                 }
@@ -854,7 +912,8 @@ private fun RedialScreen() {
 
     // Settings are remembered between runs; theme changes are applied as they happen.
     LaunchedEffect(Unit) { snapshotFlow { cfg.fingerprint() }.collect { cfg.save() } }
-    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize, cfg.hapticsOn) {
+    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize, cfg.hapticsOn, cfg.themeMode) {
+        Theming.mode.value = cfg.themeMode
         Theming.setAccent(cfg.accentIdx)
         Theming.black.value = cfg.blackOn
         Theming.size.value = cfg.uiSize
@@ -1173,7 +1232,7 @@ private fun Header(running: Boolean) {
         Column(Modifier.weight(1f)) {
             Text(
                 "SQUEVE REDAIL", fontFamily = Display, fontWeight = FontWeight.Bold,
-                fontSize = 20.sp, letterSpacing = 3.sp, color = Color.White, maxLines = 1,
+                fontSize = 20.sp, letterSpacing = 3.sp, color = Fg, maxLines = 1,
             )
             Text(
                 "AUTO-DIAL ENGINE", fontFamily = Display, fontWeight = FontWeight.Medium,
@@ -1436,7 +1495,7 @@ private fun DialTab(
                 Text(
                     "${cfg.numbers.size} TARGETS · $total CALLS" +
                         (if (customCount > 0) " · $customCount CUSTOM" else ""),
-                    fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp, color = Color.White,
+                    fontFamily = Mono, fontSize = 12.sp, letterSpacing = 1.sp, color = Fg,
                 )
                 val allLimited = cfg.numbers.all { cfg.hangUpFor(it) != null }
                 val timing = buildString {
@@ -1548,7 +1607,7 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
 
             Spacer(Modifier.height(12.dp))
             if (p != null) {
-                Text(p.number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                Text(p.number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Fg)
                 val who = names[p.number]
                 if (who != null) {
                     Text(who, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Cyan, maxLines = 1)
@@ -1601,7 +1660,7 @@ private fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String>
 private fun PercentText(animated: State<Float>) {
     Text(
         "${(animated.value * 100).roundToInt()}%", fontFamily = Display,
-        fontWeight = FontWeight.Bold, fontSize = 38.sp, color = Color.White,
+        fontWeight = FontWeight.Bold, fontSize = 38.sp, color = Fg,
     )
 }
 
@@ -1707,8 +1766,8 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedLabelColor = Cyan,
     unfocusedLabelColor = Dim,
     disabledLabelColor = Dim,
-    focusedTextColor = Color.White,
-    unfocusedTextColor = Color.White,
+    focusedTextColor = Fg,
+    unfocusedTextColor = Fg,
     disabledTextColor = Dim,
 )
 
@@ -1912,7 +1971,7 @@ private fun UndoBar(cfg: Config) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Removed ${r.number}", fontFamily = Mono, fontSize = 13.sp, color = Color.White,
+                "Removed ${r.number}", fontFamily = Mono, fontSize = 13.sp, color = Fg,
                 maxLines = 1, modifier = Modifier.weight(1f),
             )
             LinkButton("UNDO") { cfg.undoRemove() }
@@ -1964,7 +2023,7 @@ private fun QueueItem(
             Column(Modifier.weight(1f)) {
                 Text(
                     number, fontFamily = Mono, fontSize = 17.sp,
-                    color = if (done) Dim else Color.White,
+                    color = if (done) Dim else Fg,
                 )
                 if (name != null) {
                     Text(name, fontSize = 11.sp, color = if (current) Cyan else Dim, maxLines = 1)
@@ -1972,7 +2031,7 @@ private fun QueueItem(
                 if (custom != null) {
                     Text(
                         custom, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 0.5.sp,
-                        color = Color(0xFFB39DFF), maxLines = 1,
+                        color = Lilac, maxLines = 1,
                     )
                 }
             }
@@ -2169,6 +2228,13 @@ private fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
 
         GlassCard {
             SectionTitle("APPEARANCE")
+            FieldLabel("THEME")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("DARK", "LIGHT", "SYSTEM").forEachIndexed { i, label ->
+                    SegChip(label, cfg.themeMode == i, true, Modifier.weight(1f)) { cfg.themeMode = i }
+                }
+            }
+            Spacer(Modifier.height(14.dp))
             FieldLabel("SIZE")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("COMPACT", "NORMAL", "LARGE").forEachIndexed { i, label ->
@@ -2186,12 +2252,12 @@ private fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
                             .pressable { cfg.accentIdx = i }
                             .clip(CircleShape)
                             .background(Brush.linearGradient(listOf(a.main, a.second)))
-                            .border(if (sel) 3.dp else 1.dp, if (sel) Color.White else Hair, CircleShape),
+                            .border(if (sel) 3.dp else 1.dp, if (sel) Fg else Hair, CircleShape),
                     )
                 }
             }
             Spacer(Modifier.height(8.dp))
-            ToggleRow("Pure black", "Deeper background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
+            ToggleRow("Pure black", "Deeper dark background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
             ToggleRow("Haptic feedback", "Small vibrations when you tap buttons or drag rows.", cfg.hapticsOn, true) {
                 cfg.hapticsOn = it
             }
@@ -2681,7 +2747,7 @@ private fun CallLogDialog(
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f).fillMaxHeight(0.82f),
@@ -2751,7 +2817,7 @@ private fun CallLogRow(e: RecentCall, selected: Boolean, queued: Boolean, onTogg
             Text(
                 if (hasName) e.name else e.number,
                 fontFamily = if (hasName) Display else Mono, fontWeight = FontWeight.Medium,
-                fontSize = 14.sp, color = if (queued) Dim else Color.White, maxLines = 1,
+                fontSize = 14.sp, color = if (queued) Dim else Fg, maxLines = 1,
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(typeLabel(e.type), fontFamily = Mono, fontSize = 11.sp, color = typeColor(e.type))
@@ -2814,14 +2880,14 @@ private fun TargetDialog(
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 620.dp),
         ) {
             Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 SectionTitle("TARGET SETTINGS")
-                Text(number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Color.White)
+                Text(number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Fg)
                 if (name != null) {
                     Text(name, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Cyan)
                 }
@@ -2933,7 +2999,7 @@ private fun ScheduleBanner(s: Scheduled, onCancel: () -> Unit) {
     }
     GlassCard {
         SectionTitle("SCHEDULED")
-        Text(whenText, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White)
+        Text(whenText, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Fg)
         Text(
             "${s.plan.jobs.size} targets · ${s.plan.jobs.sumOf { it.attempts }} calls",
             fontSize = 12.sp, color = Dim,
@@ -2985,12 +3051,12 @@ private fun SummaryCard(
         SectionTitle(if (dry) "DRY RUN RESULTS" else "RESULTS")
         if (dry) {
             Row {
-                StatTile("CALLS", "${results.size}", Color.White, Modifier.weight(1f))
+                StatTile("CALLS", "${results.size}", Fg, Modifier.weight(1f))
                 StatTile("NUMBERS", "${perNumber.size}", Cyan, Modifier.weight(1f))
             }
         } else {
             Row {
-                StatTile("PLACED", "${results.size}", Color.White, Modifier.weight(1f))
+                StatTile("PLACED", "${results.size}", Fg, Modifier.weight(1f))
                 StatTile("ANSWERED", "$answered", Mint, Modifier.weight(1f))
                 StatTile("NO ANSWER", "$noAnswer", Dim, Modifier.weight(1f))
                 StatTile("FAILED", "$failed", Magenta, Modifier.weight(1f))
@@ -3002,7 +3068,7 @@ private fun SummaryCard(
             val ok = list.count { it.outcome == AttemptOutcome.CONNECTED }
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text(n, fontFamily = Mono, fontSize = 14.sp, color = Color.White)
+                    Text(n, fontFamily = Mono, fontSize = 14.sp, color = Fg)
                     val who = names[n]
                     if (who != null) Text(who, fontSize = 11.sp, color = Dim, maxLines = 1)
                 }
@@ -3160,7 +3226,7 @@ private fun HistoryRow(r: HistoryRecord, name: String?) {
     val shownName = r.name.ifBlank { name.orEmpty() }
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(r.number, fontFamily = Mono, fontSize = 14.sp, color = Color.White)
+            Text(r.number, fontFamily = Mono, fontSize = 14.sp, color = Fg)
             if (shownName.isNotBlank()) Text(shownName, fontSize = 11.sp, color = Cyan, maxLines = 1)
             Text(
                 fmt.format(Date(r.ts)) + (if (r.sim >= 0) " · SIM ${r.sim + 1}" else ""),
@@ -3181,7 +3247,7 @@ private fun SaveListDialog(onSave: (String) -> Unit, onDismiss: () -> Unit) {
     var name by remember { mutableStateOf("") }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f),
@@ -3220,7 +3286,7 @@ private fun ListsDialog(
 ) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 520.dp),
@@ -3283,7 +3349,7 @@ private fun ScheduleDialog(onSchedule: (Long) -> Unit, onDismiss: () -> Unit) {
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 600.dp),
@@ -3324,7 +3390,7 @@ private fun ImportDialog(raw: String, onAdd: (List<String>) -> Unit, onDismiss: 
     val nums = remember(raw) { extractNumbers(raw) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            color = Color(0xFF0E1628),
+            color = DialogBg,
             shape = RoundedCornerShape(20.dp),
             border = BorderStroke(1.dp, Cyan.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = 560.dp),
@@ -3338,10 +3404,10 @@ private fun ImportDialog(raw: String, onAdd: (List<String>) -> Unit, onDismiss: 
                 } else {
                     Text(
                         "Found ${nums.size} number" + (if (nums.size > 1) "s" else ""),
-                        fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White,
+                        fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Fg,
                     )
                     Spacer(Modifier.height(8.dp))
-                    nums.take(8).forEach { Text(it, fontFamily = Mono, fontSize = 14.sp, color = Color.White) }
+                    nums.take(8).forEach { Text(it, fontFamily = Mono, fontSize = 14.sp, color = Fg) }
                     if (nums.size > 8) Caption("+ ${nums.size - 8} more")
                     Caption("Invalid numbers are skipped, and so are duplicates unless you allowed them.")
                     Spacer(Modifier.height(14.dp))
@@ -3364,7 +3430,7 @@ private fun LockScreen(onUnlock: () -> Unit) {
     ) {
         Glyph(Icons.Filled.Lock, Cyan, 44.dp)
         Spacer(Modifier.height(16.dp))
-        Text("LOCKED", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 6.sp, color = Color.White)
+        Text("LOCKED", fontFamily = Display, fontWeight = FontWeight.Bold, fontSize = 22.sp, letterSpacing = 6.sp, color = Fg)
         Spacer(Modifier.height(6.dp))
         Text(
             "Use your phone's screen lock to continue.",
