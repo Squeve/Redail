@@ -19,4 +19,9 @@ class UpdaterTest {
     fun emptyNotesStayEmpty() {
         assertEquals("", Updater.cleanNotes(""))
     }
+
+    @Test
+    fun literalNullTextIsNotShown() {
+        assertEquals("", Updater.cleanNotes("null"))
+    }
 }

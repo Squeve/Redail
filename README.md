@@ -22,6 +22,12 @@ Android auto-redial app. Add numbers, choose how calls are ordered, and it dials
 2. Open the **Actions** tab. *Build APK* runs on every push.
 3. Every successful build on `main` is published as a GitHub Release (`build-<number>`); the app updates from it (SYSTEM > Updates).
 
+## Code layout
+
+- `MainActivity.kt` is just the activity (lock, share intents, theme host).
+- `Config.kt` holds all user settings; `Helpers.kt` small shared functions; `Numbers.kt` phone number parsing.
+- `ui/` has one file per screen area: `Theme`, `Components`, `Chrome` (header, tabs, dock), `DialTab`, `Queue`, `ConfigTab`, `SystemTab`, `LogTab`, `RunSummary`, `Dialogs`, `RedialScreen` (the screen host that wires them together).
+
 ## Tests
 
 Unit tests live in `app/src/test`. CI runs them on every build (`gradle testDebugUnitTest`) and attaches a `test-report` artifact; a failing test does not block the APK.

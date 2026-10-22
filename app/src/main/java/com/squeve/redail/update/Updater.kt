@@ -40,6 +40,7 @@ object Updater {
             .joinToString("\n")
             .replace(Regex("\n{3,}"), "\n\n")
             .trim()
+        if (out == "null") return ""
         return if (out.length > maxChars) out.take(maxChars).trimEnd() + "…" else out
     }
 
@@ -77,7 +78,7 @@ object Updater {
                     break
                 }
             }
-            if (url == null) null else Release(build, json.optString("name", tag), url, cleanNotes(json.optString("body", "")))
+            if (url == null) null else Release(build, json.optString("name", tag), url, cleanNotes(if (json.isNull("body")) "" else json.optString("body", "")))
         } finally {
             conn.disconnect()
         }
