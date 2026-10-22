@@ -216,6 +216,7 @@ internal fun QueueList(
     canEdit: Boolean, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit, onMove: (Int, Int) -> Unit,
 ) {
     val status by RedialService.status.collectAsState()
+    val heldSet by RedialService.held.collectAsState()
     val finished = status is EngineState.Finished
     val p = status.progress()
     val listState = rememberLazyListState()
@@ -286,6 +287,12 @@ internal fun QueueList(
                         index = i, number = n, name = names[n], custom = cfg.customSummary(n), state = state,
                         doneCount = if (finished) callsEach else completed, total = callsEach,
                         canRemove = canEdit, dragging = i == from,
+                        held = n in heldSet,
+                        onToggleHold = if (!canEdit && state != 2) {
+                            fun() { RedialService.setHeld(n, n !in heldSet) }
+                        } else {
+                            null
+                        },
                         onEdit = { onEdit(i) }, onRemove = { onRemove(i) },
                         onDragStart = {
                             rowH = heights[keys.getOrElse(i) { "row$i" }] ?: rowH
@@ -424,6 +431,7 @@ internal fun QueueItem(
     canRemove: Boolean, dragging: Boolean,
     onEdit: () -> Unit, onRemove: () -> Unit,
     onDragStart: () -> Unit, onDrag: (Float) -> Unit, onDragEnd: () -> Unit,
+    held: Boolean = false, onToggleHold: (() -> Unit)? = null,
 ) {
     val current = state == 1
     val done = state == 2
@@ -445,7 +453,15 @@ internal fun QueueItem(
                     else -> Color.Transparent
                 },
             )
-            .border(1.dp, if (dragging || current) Cyan.copy(alpha = 0.7f) else Hair, shape)
+            .border(
+                1.dp,
+                when {
+                    held -> Violet.copy(alpha = 0.7f)
+                    dragging || current -> Cyan.copy(alpha = 0.7f)
+                    else -> Hair
+                },
+                shape,
+            )
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -462,7 +478,7 @@ internal fun QueueItem(
             Column(Modifier.weight(1f)) {
                 Text(
                     number, fontFamily = Mono, fontSize = 17.sp,
-                    color = if (done) Dim else Fg,
+                    color = if (done || held) Dim else Fg,
                 )
                 if (name != null) {
                     Text(name, fontSize = 11.sp, color = if (current) Cyan else Dim, maxLines = 1)
@@ -472,6 +488,11 @@ internal fun QueueItem(
                         custom, fontFamily = Mono, fontSize = 10.sp, letterSpacing = 0.5.sp,
                         color = Lilac, maxLines = 1,
                     )
+                }
+                if (held) {
+                    Text("ON HOLD", fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.5.sp, color = Violet)
+                } else if (name == null && custom == null && canRemove) {
+                    Text("tap to add a name", fontSize = 10.sp, color = Dim.copy(alpha = 0.7f))
                 }
             }
             if (canRemove) {
@@ -504,6 +525,15 @@ internal fun QueueItem(
                     "$doneCount/$total", fontFamily = Mono, fontSize = 14.sp,
                     color = if (current) Cyan else Dim,
                 )
+                if (!done && onToggleHold != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Box(
+                        Modifier.size(36.dp).clip(CircleShape).pressable(onClick = onToggleHold),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (held) Glyph(Icons.Filled.PlayArrow, Violet, 20.dp) else PauseGlyph(Dim)
+                    }
+                }
             }
         }
         if (current && total > 0) {

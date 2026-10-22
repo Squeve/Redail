@@ -382,8 +382,9 @@ internal fun RedialScreen() {
                 TargetDialog(
                     number = n, name = cfg.names[n], current = cfg.overrides[n],
                     defCalls = cfg.calls, defHangUp = if (cfg.limitOn) cfg.durSec else null, defGap = cfg.gapSec,
-                    onSave = { ov ->
+                    onSave = { ov, newName ->
                         if (ov == null) cfg.overrides.remove(n) else cfg.overrides[n] = ov
+                        if (newName == null) cfg.names.remove(n) else cfg.names[n] = newName
                         cfg.save()
                         editIndex = null
                     },

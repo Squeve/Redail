@@ -31,6 +31,7 @@ class RedialService : Service() {
         const val ACTION_STOP = "com.squeve.redail.STOP"
         const val ACTION_HOLD = "com.squeve.redail.HOLD"      // cancel the auto hang-up for this call
         const val ACTION_REARM = "com.squeve.redail.REARM"    // start the auto hang-up countdown again
+        const val ACTION_UNMUTE = "com.squeve.redail.UNMUTE"  // open the microphone for this call
         private const val CHANNEL = "redail"
         private const val DONE_CHANNEL = "redail_done"
         private const val NOTIF_ID = 1
@@ -48,6 +49,13 @@ class RedialService : Service() {
         val paused = MutableStateFlow(false)
         val waitReason = MutableStateFlow<String?>(null)
         val dry = MutableStateFlow(false)
+
+        /** Numbers the user has put on hold during the current run. */
+        val held = MutableStateFlow<Set<String>>(emptySet())
+
+        fun setHeld(number: String, hold: Boolean) {
+            held.value = if (hold) held.value + number else held.value - number
+        }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -75,6 +83,7 @@ class RedialService : Service() {
             ACTION_RESUME -> engine?.resume()
             ACTION_HOLD -> engine?.holdCall()
             ACTION_REARM -> engine?.rearmTimer()
+            ACTION_UNMUTE -> engine?.releaseMic()
             ACTION_STOP -> {
                 engine?.stop()
                 EventLog.add("Stopped by you")
@@ -107,6 +116,7 @@ class RedialService : Service() {
         EventLog.clear()
         EventLog.add(if (isDry) "Dry run started: no real calls" else "Run started · ${queue.size} numbers")
         dry.value = isDry
+        held.value = emptySet()
         RunStore.clearCheckpoint(app)
 
         val e = RedialEngine(
@@ -119,6 +129,7 @@ class RedialService : Service() {
             onEvent = { EventLog.add(it) },
             onCheckpoint = { done -> if (!isDry) RunStore.saveCheckpoint(app, plan, done) },
             gate = { checkGate(prefs) },
+            isHeld = { n -> held.value.contains(n) },
             simMode = simMode,
             answeredAfterSec = prefs.getInt("answerSec", 5),
             dryRun = isDry,
@@ -264,10 +275,14 @@ class RedialService : Service() {
             s is EngineState.Paused -> b.addAction(action("Resume", ACTION_RESUME))
             s is EngineState.InCall && s.hasLimit -> {
                 if (s.hangUpAt != null) {
-                    b.addAction(action("Keep call", ACTION_HOLD))
+                    b.addAction(action(if (s.micMuted) "Keep & unmute" else "Keep call", ACTION_HOLD))
                 } else {
                     b.addAction(action("Auto hang-up", ACTION_REARM))
                 }
+                b.addAction(action("Pause", ACTION_PAUSE))
+            }
+            s is EngineState.InCall && s.micMuted -> {
+                b.addAction(action("Unmute", ACTION_UNMUTE))
                 b.addAction(action("Pause", ACTION_PAUSE))
             }
             else -> b.addAction(action("Pause", ACTION_PAUSE))

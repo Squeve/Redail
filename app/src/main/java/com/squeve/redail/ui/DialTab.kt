@@ -416,6 +416,12 @@ internal fun HeroPanel(jobCount: Int, totalCalls: Int, names: Map<String, String
                     onRearm = { sendAction(ctx, RedialService.ACTION_REARM) },
                 )
             }
+            if (inCall != null && inCall.micMuted) {
+                Spacer(Modifier.height(10.dp))
+                GhostButton("UNMUTE MIC", modifier = Modifier.fillMaxWidth().height(44.dp)) {
+                    sendAction(ctx, RedialService.ACTION_UNMUTE)
+                }
+            }
             if (paused && running && status !is EngineState.Paused) {
                 Spacer(Modifier.height(6.dp))
                 Text("PAUSING AFTER THIS CALL", fontFamily = Mono, fontSize = 11.sp, letterSpacing = 2.sp, color = Magenta)

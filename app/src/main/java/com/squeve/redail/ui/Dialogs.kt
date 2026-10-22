@@ -290,9 +290,10 @@ internal fun TargetDialog(
     defCalls: Int,
     defHangUp: Int?,
     defGap: Int,
-    onSave: (NumOverride?) -> Unit,
+    onSave: (NumOverride?, String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var nameText by remember { mutableStateOf(name ?: "") }
     var callsOn by remember { mutableStateOf(current?.calls != null) }
     var calls by remember { mutableStateOf(current?.calls ?: defCalls) }
     // 0 = follow default, 1 = custom seconds, 2 = no limit
@@ -322,9 +323,15 @@ internal fun TargetDialog(
             Column(Modifier.padding(16.dp).verticalScroll(rememberScrollState())) {
                 SectionTitle("TARGET SETTINGS")
                 Text(number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Fg)
-                if (name != null) {
-                    Text(name, fontFamily = Display, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Cyan)
-                }
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = nameText,
+                    onValueChange = { nameText = it.take(40) },
+                    singleLine = true,
+                    label = { Text("Name (optional)") },
+                    colors = fieldColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Caption("Anything left on default follows the CONFIG tab.")
                 Spacer(Modifier.height(12.dp))
                 Hairline()
@@ -372,7 +379,7 @@ internal fun TargetDialog(
 
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    GhostButton("RESET", modifier = Modifier.weight(1f).height(48.dp)) { onSave(null) }
+                    GhostButton("RESET", modifier = Modifier.weight(1f).height(48.dp)) { onSave(null, nameText.trim().ifBlank { null }) }
                     NeonButton("SAVE", modifier = Modifier.weight(1f)) {
                         val ov = NumOverride(
                             calls = if (callsOn) calls else null,
@@ -395,7 +402,7 @@ internal fun TargetDialog(
                         )
                         val empty = ov.calls == null && ov.hangUp == null && ov.gap == null &&
                             ov.speaker == null && ov.mute == null
-                        onSave(if (empty) null else ov)
+                        onSave(if (empty) null else ov, nameText.trim().ifBlank { null })
                     }
                 }
             }

@@ -60,7 +60,13 @@ sealed interface EngineState {
     data class Dialing(val p: Progress) : EngineState
 
     /** hangUpAt = when the auto hang-up fires (null = timer off); hasLimit = a duration was configured. */
-    data class InCall(val p: Progress, val hangUpAt: Long?, val hasLimit: Boolean) : EngineState
+    data class InCall(
+        val p: Progress,
+        val hangUpAt: Long?,
+        val hasLimit: Boolean,
+        /** The microphone is currently being held muted by this run. */
+        val micMuted: Boolean = false,
+    ) : EngineState
     data class Cooldown(val next: Progress, val untilMs: Long) : EngineState
     data class Paused(val last: EngineState) : EngineState
     data class Finished(val results: List<AttemptResult>) : EngineState

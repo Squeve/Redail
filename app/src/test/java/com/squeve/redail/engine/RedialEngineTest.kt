@@ -43,6 +43,7 @@ class RedialEngineTest {
         results: MutableList<AttemptResult> = mutableListOf(),
         checkpoints: MutableList<List<Int>> = mutableListOf(),
         gate: () -> Gate = { Gate.Go },
+        isHeld: (String) -> Boolean = { false },
     ) = RedialEngine(
         dialers = listOf(dialer),
         phoneBusy = MutableStateFlow(false),
@@ -51,6 +52,7 @@ class RedialEngineTest {
         onResult = { results += it },
         onCheckpoint = { checkpoints += it },
         gate = gate,
+        isHeld = isHeld,
         dryRun = dry,
         startTimeoutMs = 100,
         settleTimeoutMs = 100,
@@ -129,5 +131,16 @@ class RedialEngineTest {
         advanceUntilIdle()
         assertEquals(listOf("A"), dialer.placed)
         assertEquals(AttemptOutcome.FAILED_TO_START, results.first().outcome)
+    }
+
+    @Test
+    fun heldNumberIsPassedOverUntilItIsReleased() = runTest {
+        val results = mutableListOf<AttemptResult>()
+        // A stays on hold until B has been called.
+        val e = engine(results = results, isHeld = { n -> n == "A" && results.none { it.number == "B" } })
+        e.start(this, listOf(job("A", 2), job("B", 1)), CallOrder.SEQUENTIAL)
+        advanceUntilIdle()
+        assertEquals(listOf("B", "A", "A"), results.map { it.number })
+        assertTrue(e.state.value is EngineState.Finished)
     }
 }

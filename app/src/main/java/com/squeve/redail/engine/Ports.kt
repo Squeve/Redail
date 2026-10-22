@@ -18,6 +18,9 @@ interface CallLogReader {
 interface AudioControl {
     fun apply(speaker: Boolean, mute: Boolean)
     fun restore()
+
+    /** Open the microphone again (the user wants to talk). */
+    fun unmute() {}
 }
 
 object NoAudio : AudioControl {

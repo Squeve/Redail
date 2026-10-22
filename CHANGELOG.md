@@ -3,6 +3,9 @@
 Newest first. The top section is published as the release notes and shown in the app (SYSTEM > Updates).
 
 ## 0.15 - Queue and polish
+- Fixed: the microphone no longer stays muted when you take over a call. KEEP CALL now opens the mic, and a new UNMUTE button (app and notification) does it for calls without a time limit.
+- Tap a number to give it a name (the target dialog now has a Name field); unnamed rows say "tap to add a name".
+- During a run, each waiting number has a pause button: it is skipped while on hold and called as soon as you resume it. If only held numbers are left, the run waits for you.
 - CONFIG is regrouped into CALLING, SAFETY and APP, with folding cards that remember whether they were open.
 - SIM strategy now sits next to the SIM chooser on DIAL.
 - A red dot on SYSTEM when something needs permission, and short descriptions on cards.

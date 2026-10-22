@@ -19,6 +19,7 @@ class RedialEngine(
     private val onEvent: (String) -> Unit = {},
     private val onCheckpoint: (List<Int>) -> Unit = {},
     private val gate: () -> Gate = { Gate.Go },
+    private val isHeld: (String) -> Boolean = { false },   // numbers the user put on hold during the run
     private val simMode: Int = 0,                // 0 fixed SIM, 1 fall back to the next SIM, 2 alternate every call
     private val answeredAfterSec: Int = 5,       // a call this long (per the call log) counts as answered
     private val dryRun: Boolean = false,         // simulate: no real calls
@@ -46,6 +47,9 @@ class RedialEngine(
     @Volatile private var inCallNow = false
     @Volatile private var callCounter = 0
 
+    /** True once the user has taken over the call: the mute is no longer forced. */
+    private val micReleased = MutableStateFlow(false)
+
     private var runJob: Job? = null
     val isRunning: Boolean get() = runJob?.isActive == true
 
@@ -61,7 +65,17 @@ class RedialEngine(
 
     /** Cancel the auto hang-up for the current call; it now ends by itself. */
     fun holdCall() {
-        if (inCallNow) hangUpAt.value = null
+        if (inCallNow) {
+            hangUpAt.value = null
+            releaseMic()    // keeping a call means you want to talk
+        }
+    }
+
+    /** Stop forcing the microphone mute for the call in progress and open the mic now. */
+    fun releaseMic() {
+        if (!inCallNow) return
+        micReleased.value = true
+        if (!dryRun) audio.unmute()
     }
 
     /** Start the auto hang-up countdown again for the current call. */
@@ -158,9 +172,25 @@ class RedialEngine(
             var first = true
             var lastGap = 0L
 
-            for (s in 0 until steps) {
+            // Calls still to place. A number on hold is passed over until it is released.
+            val pending = ArrayDeque((0 until steps).toList())
+            val holdMsg = "Numbers on hold - resume one or stop"
+            while (true) {
+                pending.removeAll { skipped[slots[it]] }
+                if (pending.isEmpty()) break
+                val next = pending.firstOrNull { !isHeld(queue[slots[it]].number) }
+                if (next == null) {
+                    if (waitFlow.value != holdMsg) {
+                        waitFlow.value = holdMsg
+                        onEvent("Everything left is on hold")
+                    }
+                    delay(400)
+                    continue
+                }
+                if (waitFlow.value == holdMsg) waitFlow.value = null
+                pending.remove(next)
+                val s: Int = next
                 val ji = slots[s]
-                if (skipped[ji]) continue
                 val job = queue[ji]
 
                 if (!first) cooldown(progressAt(s), lastGap)
@@ -172,6 +202,11 @@ class RedialEngine(
                     stopReason = why
                     onEvent("Stopped: $why")
                     break
+                }
+                if (isHeld(job.number)) {
+                    // Put on hold while we were waiting: keep its place in line.
+                    pending.addFirst(s)
+                    continue
                 }
                 waitUntilIdle()
 
@@ -240,20 +275,24 @@ class RedialEngine(
         val limit = job.hangUpAfterMs
         currentLimit = limit
         hangUpAt.value = limit?.let { System.currentTimeMillis() + it }
+        micReleased.value = false
         inCallNow = true
 
         val endedByItself: Boolean = coroutineScope {
             // Keeps the published state in step with the hang-up timer (armed, held, re-armed).
             val mirror = launch {
-                hangUpAt.collect { at -> _state.value = EngineState.InCall(p, at, limit != null) }
+                combine(hangUpAt, micReleased) { at, released -> at to released }.collect { (at, released) ->
+                    _state.value = EngineState.InCall(p, at, limit != null, job.muteMic && !released)
+                }
             }
             // Re-apply speaker/mute while the call runs; the phone resets audio when the call connects.
             val keeper = if (job.speaker || job.muteMic) {
                 launch {
-                    while (true) {
+                    while (!micReleased.value) {
                         audio.apply(job.speaker, job.muteMic)
                         delay(1_500)
                     }
+                    audio.unmute()
                 }
             } else null
 

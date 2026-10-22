@@ -112,6 +112,11 @@ class AndroidAudioControl(ctx: Context) : AudioControl {
     }
 
     @Suppress("DEPRECATION")
+    override fun unmute() {
+        runCatching { am.isMicrophoneMute = false }
+    }
+
+    @Suppress("DEPRECATION")
     override fun restore() {
         if (!applied) return
         runCatching {
