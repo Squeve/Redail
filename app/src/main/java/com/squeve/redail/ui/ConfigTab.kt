@@ -283,15 +283,24 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
         }
 
         CollapsibleCard("bubble", "FLOATING BUBBLE", "The on-screen control during calls") {
+            FieldLabel("PREMIUM")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("AURORA", "GOLD", "CARBON", "FROST").forEachIndexed { j, label ->
+                    SegChip(label, cfg.bubbleLook == j + 3, true, Modifier.weight(1f)) { cfg.bubbleLook = j + 3 }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            FieldLabel("CLASSIC")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("DARK", "LIGHT", "NEON").forEachIndexed { i, label ->
                     SegChip(label, cfg.bubbleLook == i, true, Modifier.weight(1f)) { cfg.bubbleLook = i }
                 }
+                Spacer(Modifier.weight(1f))
             }
-            Caption("If the bubble looks washed out on your phone, try another look, then preview it.")
+            Caption("Applies to the floating panel and the bubble. Preview shows both for a few seconds.")
             Spacer(Modifier.height(12.dp))
             GhostButton(
-                "PREVIEW BUBBLE",
+                "PREVIEW LOOK",
                 icon = { Glyph(Icons.Filled.PlayArrow, it, 16.dp) },
             ) {
                 if (Settings.canDrawOverlays(ctx)) {

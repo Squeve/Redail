@@ -207,7 +207,7 @@ internal class Config(private val prefs: SharedPreferences) {
     var order by mutableStateOf(
         CallOrder.values().getOrElse(prefs.getInt("order", 0)) { CallOrder.SEQUENTIAL },
     )
-    var bubbleLook by mutableStateOf(prefs.getInt("bubbleLook", 0)) // 0 dark, 1 light, 2 neon
+    var bubbleLook by mutableStateOf(prefs.getInt("bubbleLook", 0)) // 0 dark, 1 light, 2 neon, 3 aurora, 4 gold, 5 carbon, 6 frost
     var alertOn by mutableStateOf(prefs.getBoolean("alertOn", true))
     var dailyCap by mutableStateOf(prefs.getInt("dailyCap", 0))
     var quietOn by mutableStateOf(prefs.getBoolean("quietOn", false))

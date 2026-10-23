@@ -3,6 +3,7 @@
 Newest first. The top section is published as the release notes and shown in the app (SYSTEM > Updates).
 
 ## 0.15 - Queue and polish
+- Four premium floating looks, Aurora, Gold, Carbon and Frost, with gradient rings, a glass highlight and a styled floating panel. Pick one in CONFIG > Floating bubble; PREVIEW LOOK shows the panel and the bubble.
 - Names show in the run notification and the floating bubble, and the queue has a search box (name or number, local or international form) once it has 6 or more numbers.
 - SELECT mode in the queue: tick several numbers, then DELETE them or give them the same settings. CLEAR and bulk delete can be undone.
 - Friendlier empty states for the queue and the LOG tab.
