@@ -292,6 +292,7 @@ internal fun TargetDialog(
     defGap: Int,
     onSave: (NumOverride?, String?) -> Unit,
     onDismiss: () -> Unit,
+    bulk: Boolean = false,
 ) {
     var nameText by remember { mutableStateOf(name ?: "") }
     var callsOn by remember { mutableStateOf(current?.calls != null) }
@@ -324,15 +325,20 @@ internal fun TargetDialog(
                 SectionTitle("TARGET SETTINGS")
                 Text(number, fontFamily = Mono, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = Fg)
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = nameText,
-                    onValueChange = { nameText = it.take(40) },
-                    singleLine = true,
-                    label = { Text("Name (optional)") },
-                    colors = fieldColors(),
-                    modifier = Modifier.fillMaxWidth(),
+                if (!bulk) {
+                    OutlinedTextField(
+                        value = nameText,
+                        onValueChange = { nameText = it.take(40) },
+                        singleLine = true,
+                        label = { Text("Name (optional)") },
+                        colors = fieldColors(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Caption(
+                    if (bulk) "Applies to every selected number. Anything left on default resets to the CONFIG tab."
+                    else "Anything left on default follows the CONFIG tab.",
                 )
-                Caption("Anything left on default follows the CONFIG tab.")
                 Spacer(Modifier.height(12.dp))
                 Hairline()
 

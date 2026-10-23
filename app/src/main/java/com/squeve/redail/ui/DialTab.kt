@@ -167,6 +167,17 @@ internal fun DialTab(
         )
         SummaryHost(cfg, a)
 
+        var query by remember { mutableStateOf("") }
+        var selecting by remember { mutableStateOf(false) }
+        var bulkDialog by remember { mutableStateOf(false) }
+        val selected = remember { mutableStateListOf<Int>() }
+        LaunchedEffect(running) {
+            if (running) {
+                selecting = false
+                selected.clear()
+            }
+        }
+
         GlassCard {
             SectionTitle("TARGETS")
             AddNumberRow(enabled = !running, onAdd = a.add, a = a)
@@ -177,26 +188,70 @@ internal fun DialTab(
                     fontFamily = Mono, fontSize = 13.sp, letterSpacing = 3.sp, color = Dim,
                     modifier = Modifier.weight(1f),
                 )
-                if (!running) {
+                if (!running && !selecting) {
+                    if (cfg.numbers.size > 1) LinkButton("SELECT") { selecting = true }
                     if (cfg.numbers.isNotEmpty()) LinkButton("SAVE LIST") { a.saveList() }
                     LinkButton("LISTS") { a.lists() }
                     if (cfg.numbers.isNotEmpty()) {
                         LinkButton("CLEAR") {
-                            cfg.numbers.clear()
+                            cfg.removeManyWithUndo(cfg.numbers.indices.toList())
                             cfg.save()
                             clearFinished()
                         }
                     }
                 }
             }
-            if (cfg.numbers.isEmpty()) {
-                Text(
-                    "No targets yet.", fontFamily = Mono, fontSize = 13.sp, color = Dim,
-                    modifier = Modifier.padding(vertical = 8.dp),
+            if (selecting) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${selected.size} SELECTED", fontFamily = Mono, fontSize = 12.sp, letterSpacing = 2.sp,
+                        color = Cyan, modifier = Modifier.weight(1f),
+                    )
+                    LinkButton("ALL") {
+                        selected.clear()
+                        selected.addAll(cfg.numbers.indices)
+                    }
+                    if (selected.isNotEmpty()) {
+                        LinkButton("SETTINGS") { bulkDialog = true }
+                        LinkButton("DELETE") {
+                            cfg.removeManyWithUndo(selected.toList())
+                            selected.clear()
+                            selecting = false
+                            cfg.save()
+                            clearFinished()
+                        }
+                    }
+                    LinkButton("DONE") {
+                        selecting = false
+                        selected.clear()
+                    }
+                }
+            }
+            if (cfg.numbers.size >= 6) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text("Search name or number", color = Dim, fontSize = 13.sp) },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            Box(Modifier.size(36.dp).clip(CircleShape).pressable { query = "" }, contentAlignment = Alignment.Center) {
+                                Glyph(Icons.Filled.Close, Dim, 18.dp)
+                            }
+                        }
+                    },
+                    colors = fieldColors(),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
             }
-            if (!running && cfg.numbers.isNotEmpty()) {
-                Caption("Tap a number to give it its own calls, hang-up, interval or audio.")
+            if (cfg.numbers.isEmpty()) {
+                EmptyState(
+                    0, "Your queue is empty",
+                    "Type a number above, paste a list, or pick from your contacts or call log.",
+                )
+            }
+            if (!running && cfg.numbers.isNotEmpty() && !selecting) {
+                Caption("Tap a number to name it or give it its own calls, hang-up, interval or audio.")
             }
             QueueList(
                 numbers = cfg.numbers, names = cfg.names, cfg = cfg, canEdit = !running,
@@ -210,6 +265,28 @@ internal fun DialTab(
                     cfg.move(from, to)
                     cfg.save()
                 },
+                query = query,
+                selecting = selecting,
+                selected = selected.toSet(),
+                onToggleSelect = { i -> if (i in selected) selected.remove(i) else selected.add(i) },
+            )
+        }
+
+        if (bulkDialog) {
+            TargetDialog(
+                number = "${selected.size} numbers", name = null, current = null,
+                defCalls = cfg.calls, defHangUp = if (cfg.limitOn) cfg.durSec else null, defGap = cfg.gapSec,
+                onSave = { ov, _ ->
+                    selected.mapNotNull { cfg.numbers.getOrNull(it) }.forEach { n ->
+                        if (ov == null) cfg.overrides.remove(n) else cfg.overrides[n] = ov
+                    }
+                    cfg.save()
+                    bulkDialog = false
+                    selecting = false
+                    selected.clear()
+                },
+                onDismiss = { bulkDialog = false },
+                bulk = true,
             )
         }
 

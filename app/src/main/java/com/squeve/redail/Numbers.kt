@@ -24,3 +24,15 @@ internal fun extractNumbers(text: String): List<String> =
         .filter { n -> n.count { it.isDigit() } in 7..15 }
         .distinct()
         .toList()
+
+/** Queue search: matches part of a number (local or international form) or part of the name. */
+internal fun matchesQuery(number: String, name: String?, query: String): Boolean {
+    val q = query.trim().lowercase()
+    if (q.isEmpty()) return true
+    if (number.lowercase().contains(q)) return true
+    if (q.all { it.isDigit() || it in " +-()." }) {
+        val digits = q.filter { it.isDigit() }.trimStart('0')
+        if (digits.isNotEmpty() && number.filter { it.isDigit() }.contains(digits)) return true
+    }
+    return name?.lowercase()?.contains(q) == true
+}

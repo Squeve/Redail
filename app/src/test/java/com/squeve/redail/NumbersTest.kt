@@ -37,4 +37,26 @@ class NumbersTest {
     fun repeatedNumbersAreListedOnce() {
         assertEquals(listOf("0722111222"), extractNumbers("0722111222 and again 0722-111-222"))
     }
+
+    @Test
+    fun searchFindsLocalFormOfInternationalNumber() {
+        assertTrue(matchesQuery("+254722111222", null, "0722"))
+        assertTrue(matchesQuery("+254722111222", null, "111 222"))
+    }
+
+    @Test
+    fun searchFindsNamesIgnoringCase() {
+        assertTrue(matchesQuery("+254722111222", "John Kamau", "kamau"))
+        assertFalse(matchesQuery("+254722111222", "John Kamau", "mary"))
+    }
+
+    @Test
+    fun blankSearchMatchesEverything() {
+        assertTrue(matchesQuery("0722111222", null, "  "))
+    }
+
+    @Test
+    fun wordsWithDigitsDoNotMatchByDigitsAlone() {
+        assertFalse(matchesQuery("+254722111222", null, "john 2"))
+    }
 }

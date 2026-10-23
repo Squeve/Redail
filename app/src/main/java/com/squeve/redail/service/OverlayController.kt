@@ -145,7 +145,7 @@ class OverlayController(private val ctx: Context) {
         bubble.look = prefs.getInt("bubbleLook", 0)
 
         fun line(p: Progress) =
-            "${p.number}\nCall ${p.step}/${p.steps} · this number ${p.attempt}/${p.total}"
+            "${RedialService.label(p.number)}\nCall ${p.step}/${p.steps} · this number ${p.attempt}/${p.total}"
 
         val (t, d) = when (s) {
             is EngineState.Dialing -> "Dialing…" to line(s.p)

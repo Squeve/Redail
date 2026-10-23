@@ -53,6 +53,11 @@ class RedialService : Service() {
         /** Numbers the user has put on hold during the current run. */
         val held = MutableStateFlow<Set<String>>(emptySet())
 
+        /** Names for the numbers in the current run, for the notification and the bubble. */
+        @Volatile var nameMap: Map<String, String> = emptyMap()
+
+        fun label(number: String): String = nameMap[number]?.let { "$it · $number" } ?: number
+
         fun setHeld(number: String, hold: Boolean) {
             held.value = if (hold) held.value + number else held.value - number
         }
@@ -117,6 +122,7 @@ class RedialService : Service() {
         EventLog.add(if (isDry) "Dry run started: no real calls" else "Run started · ${queue.size} numbers")
         dry.value = isDry
         held.value = emptySet()
+        nameMap = names
         RunStore.clearCheckpoint(app)
 
         val e = RedialEngine(
@@ -238,11 +244,11 @@ class RedialService : Service() {
 
     private fun describe(s: EngineState): String = when (s) {
         is EngineState.Idle -> "Starting…"
-        is EngineState.Dialing -> "Dialing ${s.p.number} · call ${s.p.step}/${s.p.steps}"
+        is EngineState.Dialing -> "Dialing ${label(s.p.number)} · call ${s.p.step}/${s.p.steps}"
         is EngineState.InCall ->
-            "Calling ${s.p.number} · call ${s.p.step}/${s.p.steps}" +
+            "Calling ${label(s.p.number)} · call ${s.p.step}/${s.p.steps}" +
                 (if (s.hasLimit && s.hangUpAt == null) " · timer off" else "")
-        is EngineState.Cooldown -> "Next: ${s.next.number} · call ${s.next.step}/${s.next.steps}"
+        is EngineState.Cooldown -> "Next: ${label(s.next.number)} · call ${s.next.step}/${s.next.steps}"
         is EngineState.Paused -> waitReason.value?.let { "Waiting: $it" } ?: "Paused"
         is EngineState.Finished -> "Done · ${s.results.size} calls"
     }

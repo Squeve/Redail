@@ -167,7 +167,7 @@ internal fun parseOverride(line: String): Pair<String, NumOverride>? {
     return f[0] to NumOverride(f[1].toIntOrNull(), f[2].toIntOrNull(), f[3].toIntOrNull(), flag(4), flag(5))
 }
 
-internal class RemovedEntry(val index: Int, val number: String)
+internal class RemovedEntry(val items: List<Pair<Int, String>>)
 
 /** All user settings in one place; changes only recompose whatever reads that field. */
 @Stable
@@ -229,15 +229,20 @@ internal class Config(private val prefs: SharedPreferences) {
     /** The last number taken out of the queue, kept for a few seconds so it can be put back. */
     var removed by mutableStateOf<RemovedEntry?>(null)
 
-    fun removeWithUndo(i: Int) {
-        if (i !in numbers.indices) return
-        val n = numbers.removeAt(i)
-        removed = RemovedEntry(i, n)
+    fun removeWithUndo(i: Int) = removeManyWithUndo(listOf(i))
+
+    fun removeManyWithUndo(indices: List<Int>) {
+        val idx = indices.filter { it in numbers.indices }.distinct().sorted()
+        if (idx.isEmpty()) return
+        val items = idx.map { it to numbers[it] }
+        idx.asReversed().forEach { numbers.removeAt(it) }
+        removed = RemovedEntry(items)
     }
 
     fun undoRemove() {
         val r = removed ?: return
-        numbers.add(r.index.coerceIn(0, numbers.size), r.number)
+        // Ascending order puts every number back exactly where it was.
+        r.items.forEach { (i, n) -> numbers.add(i.coerceIn(0, numbers.size), n) }
         removed = null
         save()
     }

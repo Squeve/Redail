@@ -218,6 +218,7 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("redail", Context.MODE_PRIVATE)
         Fonts.init(this)
         Theming.load(prefs, this)
+        window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Ink.toArgb()))
         if (prefs.getBoolean("lockOn", false) && savedInstanceState == null) LockState.locked.value = true
         window.statusBarColor = Ink.toArgb()
         window.navigationBarColor = Ink.toArgb()

@@ -214,6 +214,8 @@ internal fun fieldColors() = OutlinedTextFieldDefaults.colors(
 internal fun QueueList(
     numbers: List<String>, names: Map<String, String>, cfg: Config,
     canEdit: Boolean, onEdit: (Int) -> Unit, onRemove: (Int) -> Unit, onMove: (Int, Int) -> Unit,
+    query: String = "", selecting: Boolean = false, selected: Set<Int> = emptySet(),
+    onToggleSelect: (Int) -> Unit = {},
 ) {
     val status by RedialService.status.collectAsState()
     val heldSet by RedialService.held.collectAsState()
@@ -224,9 +226,15 @@ internal fun QueueList(
 
     // Keep the number being dialled in view during a run.
     val currentIndex = p?.jobIndex
-    LaunchedEffect(currentIndex) {
-        if (currentIndex != null && currentIndex in numbers.indices) listState.animateScrollToItem(currentIndex)
+    val searching = query.isNotBlank()
+    val shown = if (searching) list.indices.filter { matchesQuery(list[it], names[list[it]], query) } else list.indices.toList()
+    LaunchedEffect(currentIndex, searching) {
+        if (currentIndex != null) {
+            val pos = shown.indexOf(currentIndex)
+            if (pos >= 0) listState.animateScrollToItem(pos)
+        }
     }
+    val canReorder = canEdit && !searching && !selecting
 
     // Stable keys, so each row keeps its own swipe and entry state when the list changes.
     val counts = HashMap<String, Int>()
@@ -244,11 +252,15 @@ internal fun QueueList(
     val from = dragFrom
     val target = if (from == null) -1 else (from + (dragY / rowH).roundToInt()).coerceIn(0, (list.size - 1).coerceAtLeast(0))
 
+    if (searching && shown.isEmpty()) {
+        Text("Nothing matches.", fontFamily = Mono, fontSize = 13.sp, color = Dim, modifier = Modifier.padding(vertical = 8.dp))
+    }
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxWidth().heightIn(max = if (canEdit) 460.dp else 340.dp),
     ) {
-        itemsIndexed(list, key = { i, _ -> keys.getOrElse(i) { "row$i" } }) { i, n ->
+        items(shown, key = { keys.getOrElse(it) { "row$it" } }) { i ->
+            val n = list[i]
             val completed = p?.completed?.getOrNull(i) ?: 0
             val callsEach = cfg.callsFor(n)
             // 0 = queued, 1 = current, 2 = done
@@ -277,7 +289,7 @@ internal fun QueueList(
                 enter = fadeIn(tween(250)) + expandVertically(tween(250)),
             ) {
                 SwipeToRemove(
-                    enabled = canEdit && from == null,
+                    enabled = canEdit && from == null && !selecting,
                     onRemove = { onRemove(i) },
                     modifier = Modifier.onSizeChanged { sz ->
                         if (sz.height > 0) heights[keys.getOrElse(i) { "row$i" }] = sz.height.toFloat()
@@ -286,7 +298,8 @@ internal fun QueueList(
                     QueueItem(
                         index = i, number = n, name = names[n], custom = cfg.customSummary(n), state = state,
                         doneCount = if (finished) callsEach else completed, total = callsEach,
-                        canRemove = canEdit, dragging = i == from,
+                        canRemove = canEdit, canReorder = canReorder, dragging = i == from,
+                        selecting = selecting, selected = i in selected, onToggleSelect = { onToggleSelect(i) },
                         held = n in heldSet,
                         onToggleHold = if (!canEdit && state != 2) {
                             fun() { RedialService.setHeld(n, n !in heldSet) }
@@ -417,7 +430,7 @@ internal fun UndoBar(cfg: Config) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Removed ${r.number}", fontFamily = Mono, fontSize = 13.sp, color = Fg,
+                if (r.items.size == 1) "Removed ${r.items[0].second}" else "Removed ${r.items.size} numbers", fontFamily = Mono, fontSize = 13.sp, color = Fg,
                 maxLines = 1, modifier = Modifier.weight(1f),
             )
             LinkButton("UNDO") { cfg.undoRemove() }
@@ -429,6 +442,7 @@ internal fun UndoBar(cfg: Config) {
 internal fun QueueItem(
     index: Int, number: String, name: String?, custom: String?, state: Int, doneCount: Int, total: Int,
     canRemove: Boolean, dragging: Boolean,
+    canReorder: Boolean = true, selecting: Boolean = false, selected: Boolean = false, onToggleSelect: () -> Unit = {},
     onEdit: () -> Unit, onRemove: () -> Unit,
     onDragStart: () -> Unit, onDrag: (Float) -> Unit, onDragEnd: () -> Unit,
     held: Boolean = false, onToggleHold: (() -> Unit)? = null,
@@ -442,7 +456,7 @@ internal fun QueueItem(
     val endNow by rememberUpdatedState(onDragEnd)
     Column(
         Modifier
-            .pressable(enabled = canRemove, onClick = onEdit)
+            .pressable(enabled = canRemove, onClick = if (selecting) onToggleSelect else onEdit)
             .fillMaxWidth()
             .padding(vertical = 3.dp)
             .clip(shape)
@@ -466,7 +480,18 @@ internal fun QueueItem(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.width(30.dp), contentAlignment = Alignment.CenterStart) {
-                if (done) {
+                if (selecting) {
+                    Box(
+                        Modifier
+                            .size(20.dp)
+                            .clip(CircleShape)
+                            .background(if (selected) Cyan else Color.Transparent)
+                            .border(2.dp, if (selected) Cyan else Dim, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (selected) Glyph(Icons.Filled.Check, Ink, 14.dp)
+                    }
+                } else if (done) {
                     Glyph(Icons.Filled.Check, Mint, 16.dp)
                 } else {
                     Text(
@@ -491,13 +516,15 @@ internal fun QueueItem(
                 }
                 if (held) {
                     Text("ON HOLD", fontFamily = Mono, fontSize = 10.sp, letterSpacing = 1.5.sp, color = Violet)
-                } else if (name == null && custom == null && canRemove) {
+                } else if (name == null && custom == null && canRemove && !selecting) {
                     Text("tap to add a name", fontSize = 10.sp, color = Dim.copy(alpha = 0.7f))
                 }
             }
-            if (canRemove) {
+            if (canRemove && selecting) {
+                // Selecting: the whole row toggles, no handle or remove button.
+            } else if (canRemove) {
                 // Press and hold the handle, then drag to reorder.
-                Box(
+                if (canReorder) Box(
                     Modifier
                         .size(36.dp)
                         .pointerInput(Unit) {

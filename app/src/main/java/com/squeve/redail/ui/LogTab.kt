@@ -176,10 +176,7 @@ internal fun EventFeed(modifier: Modifier) {
     val shape = RoundedCornerShape(16.dp)
     Box(modifier.fillMaxWidth().clip(shape).background(Panel).border(1.dp, Hair, shape)) {
         if (lines.isEmpty()) {
-            Text(
-                "Nothing yet. What the engine is doing shows up here while a run is going.",
-                fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp),
-            )
+            EmptyState(1, "Nothing yet", "What the engine is doing shows up here while a run is going.")
         } else {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(12.dp)) {
                 items(lines.size) { i ->
@@ -230,10 +227,7 @@ internal fun HistoryList(cfg: Config, modifier: Modifier) {
         Box(Modifier.weight(1f).fillMaxWidth().clip(shape).background(Panel).border(1.dp, Hair, shape)) {
             when {
                 all == null -> Text("Loading…", fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp))
-                shown.isEmpty() -> Text(
-                    "No calls here yet. Every real call is recorded once a run places it.",
-                    fontFamily = Mono, fontSize = 12.sp, color = Dim, modifier = Modifier.padding(16.dp),
-                )
+                shown.isEmpty() -> EmptyState(1, "No calls here yet", "Every real call is recorded once a run places it.")
                 else -> LazyColumn(Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 6.dp)) {
                     items(shown) { r -> HistoryRow(r, cfg.names[r.number]) }
                 }

@@ -366,3 +366,18 @@ internal fun Caption(text: String) {
 internal fun Hairline() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Hair))
 }
+
+/** A calm placeholder for lists with nothing in them yet. */
+@Composable
+internal fun EmptyState(kind: Int, title: String, hint: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier.fillMaxWidth().padding(vertical = 18.dp, horizontal = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        TabIcon(kind, Dim.copy(alpha = 0.55f), 40.dp)
+        Spacer(Modifier.height(10.dp))
+        Text(title, fontFamily = Display, fontSize = 15.sp, letterSpacing = 1.sp, color = Fg)
+        Spacer(Modifier.height(4.dp))
+        Text(hint, fontSize = 12.sp, color = Dim, textAlign = TextAlign.Center)
+    }
+}
