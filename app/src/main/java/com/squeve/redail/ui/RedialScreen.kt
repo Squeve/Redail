@@ -202,8 +202,9 @@ internal fun RedialScreen() {
 
     // Settings are remembered between runs; theme changes are applied as they happen.
     LaunchedEffect(Unit) { snapshotFlow { cfg.fingerprint() }.collect { cfg.save() } }
-    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize, cfg.hapticsOn, cfg.themeMode) {
+    LaunchedEffect(cfg.accentIdx, cfg.blackOn, cfg.uiSize, cfg.hapticsOn, cfg.themeMode, cfg.themePack) {
         Theming.mode.value = cfg.themeMode
+        Theming.packIdx.value = cfg.themePack
         Theming.setAccent(cfg.accentIdx)
         Theming.black.value = cfg.blackOn
         Theming.size.value = cfg.uiSize

@@ -240,7 +240,7 @@ class MainActivity : ComponentActivity() {
             val scaled = remember(base, factor) { Density(base.density * factor, base.fontScale.coerceAtMost(1f)) }
             val type = remember { typographyWith(Fonts.body) }
             val isLight = Theming.light
-            val scheme = remember(Theming.accent.value, Theming.black.value, isLight) { schemeFor() }
+            val scheme = remember(Theming.accent.value, Theming.black.value, isLight, Theming.packIdx.value) { schemeFor() }
             val sysDark = isSystemInDarkTheme()
             SideEffect {
                 if (Theming.systemDark.value != sysDark) Theming.systemDark.value = sysDark

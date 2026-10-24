@@ -168,7 +168,9 @@ internal object Theming {
     val haptics = mutableStateOf(true)
     val mode = mutableStateOf(0)           // 0 dark, 1 light, 2 follow the phone
     val systemDark = mutableStateOf(true)
-    val light: Boolean get() = mode.value == 1 || (mode.value == 2 && !systemDark.value)
+    val packIdx = mutableStateOf(0)        // 0 = classic, 1.. = PACKS
+    val pack: ThemePack? get() = PACKS.getOrNull(packIdx.value - 1)
+    val light: Boolean get() = pack?.light ?: (mode.value == 1 || (mode.value == 2 && !systemDark.value))
 
     fun setAccent(i: Int) {
         val a = ACCENTS[i.coerceIn(0, ACCENTS.size - 1)]
@@ -184,46 +186,47 @@ internal object Theming {
         black.value = prefs.getBoolean("black", false)
         size.value = prefs.getInt("uiSize", 1)
         haptics.value = prefs.getBoolean("haptics", true)
+        packIdx.value = prefs.getInt("themePack", 0)
     }
 }
 
-internal val Ink: Color get() = when {
+internal val Ink: Color get() = Theming.pack?.ink ?: when {
     Theming.light -> Color(0xFFF3F6FC)
     Theming.black.value -> Color.Black
     else -> Color(0xFF070B14)
 }
-internal val InkSoft: Color get() = when {
+internal val InkSoft: Color get() = Theming.pack?.inkSoft ?: when {
     Theming.light -> Color(0xFFE7EDF8)
     Theming.black.value -> Color(0xFF050505)
     else -> Color(0xFF0D1424)
 }
-internal val Panel: Color get() = when {
+internal val Panel: Color get() = Theming.pack?.panel ?: when {
     Theming.light -> Color(0xE6FFFFFF)
     Theming.black.value -> Color(0xE60C0C0C)
     else -> Color(0xCC111A2C)
 }
-internal val Dock: Color get() = when {
+internal val Dock: Color get() = Theming.pack?.dock ?: when {
     Theming.light -> Color(0xF5FFFFFF)
     Theming.black.value -> Color(0xFF000000)
     else -> Color(0xF00A1020)
 }
-internal val Cyan: Color get() =
+internal val Cyan: Color get() = Theming.pack?.accent ?:
     if (Theming.light) androidx.compose.ui.graphics.lerp(Theming.accent.value, Color.Black, 0.42f) else Theming.accent.value
-internal val Violet: Color get() =
+internal val Violet: Color get() = Theming.pack?.accent2 ?:
     if (Theming.light) androidx.compose.ui.graphics.lerp(Theming.accent2.value, Color.Black, 0.22f) else Theming.accent2.value
 internal val Magenta = Color(0xFFFF2E93)
-internal val Mint: Color get() = if (Theming.light) Color(0xFF00A152) else Color(0xFF00E676)
-internal val Dim: Color get() = if (Theming.light) Color(0xFF5A6B88) else Color(0xFF8A9BB8)
-internal val Hair: Color get() = when {
+internal val Mint: Color get() = Theming.pack?.ok ?: if (Theming.light) Color(0xFF00A152) else Color(0xFF00E676)
+internal val Dim: Color get() = Theming.pack?.dim ?: if (Theming.light) Color(0xFF5A6B88) else Color(0xFF8A9BB8)
+internal val Hair: Color get() = Theming.pack?.hair ?: when {
     Theming.light -> Color(0xFFCBD5E8)
     Theming.black.value -> Color(0xFF262626)
     else -> Color(0xFF22304A)
 }
 /** Main text colour. */
-internal val Fg: Color get() = if (Theming.light) Color(0xFF0B1220) else Color.White
-internal val Soft: Color get() = if (Theming.light) Color(0xFF16213A) else Color(0xFFE6EEFF)
-internal val DialogBg: Color get() = if (Theming.light) Color.White else Color(0xFF0E1628)
-internal val Lilac: Color get() = if (Theming.light) Color(0xFF6A4DE0) else Color(0xFFB39DFF)
+internal val Fg: Color get() = Theming.pack?.fg ?: if (Theming.light) Color(0xFF0B1220) else Color.White
+internal val Soft: Color get() = Theming.pack?.soft ?: if (Theming.light) Color(0xFF16213A) else Color(0xFFE6EEFF)
+internal val DialogBg: Color get() = Theming.pack?.dialog ?: if (Theming.light) Color.White else Color(0xFF0E1628)
+internal val Lilac: Color get() = Theming.pack?.lilac ?: if (Theming.light) Color(0xFF6A4DE0) else Color(0xFFB39DFF)
 
 /** The whole UI is drawn at this fraction of normal size (dp and sp together). */
 internal const val UI_SCALE = 0.88f
@@ -285,30 +288,66 @@ internal fun schemeFor() = if (Theming.light) {
     )
 }
 
-/** Gradient, a soft cyan glow from the top and a faint grid. Drawn once, cheap. */
+/** Gradient, two soft glows and a faint pattern. Drawn once, cheap. */
 internal fun Modifier.techBackdrop(): Modifier = this.drawBehind {
     drawRect(BgBrush)
-    val glowCenter = Offset(size.width * 0.5f, 0f)
-    drawCircle(
-        brush = Brush.radialGradient(
-            listOf(Cyan.copy(alpha = 0.12f), Color.Transparent),
-            center = glowCenter,
-            radius = size.width * 0.95f,
-        ),
-        radius = size.width * 0.95f,
-        center = glowCenter,
-    )
-    val step = 36.dp.toPx()
-    val gridColor = Cyan.copy(alpha = 0.035f)
-    var x = 0f
-    while (x < size.width) {
-        drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), 1f)
-        x += step
+    val w = size.width
+    val h = size.height
+    val pack = Theming.pack
+    fun glow(c: Color, center: Offset, radius: Float, alpha: Float) {
+        drawCircle(
+            brush = Brush.radialGradient(listOf(c.copy(alpha = alpha), Color.Transparent), center = center, radius = radius),
+            radius = radius,
+            center = center,
+        )
     }
-    var y = 0f
-    while (y < size.height) {
-        drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1f)
-        y += step
+    if (pack == null) {
+        glow(Cyan, Offset(w * 0.5f, 0f), w * 0.95f, 0.12f)
+    } else {
+        glow(pack.glowA, Offset(w * 0.2f, 0f), w * 1.0f, if (pack.light) 0.28f else 0.22f)
+        glow(pack.glowB, Offset(w * 0.95f, h * 0.92f), w * 0.9f, if (pack.light) 0.22f else 0.16f)
+    }
+    val line = Cyan.copy(alpha = if (pack == null) 0.035f else if (pack.light) 0.07f else 0.05f)
+    when (pack?.pattern ?: 0) {
+        1 -> {
+            val step = 22.dp.toPx()
+            var y = step / 2
+            while (y < h) {
+                var x = step / 2
+                while (x < w) {
+                    drawCircle(line, radius = 1.3.dp.toPx(), center = Offset(x, y))
+                    x += step
+                }
+                y += step
+            }
+        }
+        2 -> {
+            val step = 30.dp.toPx()
+            var x = -h
+            while (x < w) {
+                drawLine(line, Offset(x, h), Offset(x + h, 0f), 1f)
+                x += step
+            }
+        }
+        3 -> {
+            val center = Offset(w * 0.92f, h * 0.95f)
+            for (k in 1..7) {
+                drawCircle(line, radius = 90.dp.toPx() * k, center = center, style = Stroke(width = 1f))
+            }
+        }
+        else -> {
+            val step = 36.dp.toPx()
+            var x = 0f
+            while (x < w) {
+                drawLine(line, Offset(x, 0f), Offset(x, h), 1f)
+                x += step
+            }
+            var y = 0f
+            while (y < h) {
+                drawLine(line, Offset(0f, y), Offset(w, y), 1f)
+                y += step
+            }
+        }
     }
 }
 

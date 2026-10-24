@@ -222,6 +222,7 @@ internal class Config(private val prefs: SharedPreferences) {
     var uiSize by mutableStateOf(prefs.getInt("uiSize", 1))
     var hapticsOn by mutableStateOf(prefs.getBoolean("haptics", true))
     var themeMode by mutableStateOf(prefs.getInt("themeMode", 0))
+    var themePack by mutableStateOf(prefs.getInt("themePack", 0))
     var smartGaps by mutableStateOf(prefs.getBoolean("smartGaps", false))
     var gapBusySec by mutableStateOf(prefs.getInt("gapBusySec", 5))
     var gapNoAnswerSec by mutableStateOf(prefs.getInt("gapNoAnswerSec", 20))
@@ -316,7 +317,7 @@ internal class Config(private val prefs: SharedPreferences) {
     fun fingerprint(): List<Any?> = listOf(
         calls, gapSec, gapRandom, gapMaxSec, limitOn, durSec, skipAnswered, answersToStop, answerSec,
         speakerOn, muteOn, simSlot, simMode, order, bubbleLook, alertOn, dailyCap, quietOn, quietStart,
-        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn, themeMode,
+        quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn, themeMode, themePack,
         smartGaps, gapBusySec, gapNoAnswerSec, untilAnswered, maxTries, giveUpMin, answerAlert, answerGuessSec,
         answerAction,
     )
@@ -346,7 +347,7 @@ internal class Config(private val prefs: SharedPreferences) {
             .putString("countryCode", countryCode).putBoolean("allowDup", allowDup)
             .putBoolean("lockOn", lockOn)
             .putInt("accent", accentIdx).putBoolean("black", blackOn).putInt("uiSize", uiSize)
-            .putBoolean("haptics", hapticsOn).putInt("themeMode", themeMode)
+            .putBoolean("haptics", hapticsOn).putInt("themeMode", themeMode).putInt("themePack", themePack)
             .putBoolean("smartGaps", smartGaps).putInt("gapBusySec", gapBusySec).putInt("gapNoAnswerSec", gapNoAnswerSec)
             .putBoolean("untilAnswered", untilAnswered).putInt("maxTries", maxTries).putInt("giveUpMin", giveUpMin)
             .putBoolean("answerAlert", answerAlert).putInt("answerGuessSec", answerGuessSec)
@@ -388,6 +389,7 @@ internal class Config(private val prefs: SharedPreferences) {
             put("uiSize", uiSize)
             put("haptics", hapticsOn)
             put("themeMode", themeMode)
+            put("themePack", themePack)
             put("smartGaps", smartGaps)
             put("gapBusySec", gapBusySec)
             put("gapNoAnswerSec", gapNoAnswerSec)
@@ -441,6 +443,7 @@ internal class Config(private val prefs: SharedPreferences) {
         uiSize = o.optInt("uiSize", uiSize)
         hapticsOn = o.optBoolean("haptics", hapticsOn)
         themeMode = o.optInt("themeMode", themeMode)
+        themePack = o.optInt("themePack", themePack)
         smartGaps = o.optBoolean("smartGaps", smartGaps)
         gapBusySec = o.optInt("gapBusySec", gapBusySec)
         gapNoAnswerSec = o.optInt("gapNoAnswerSec", gapNoAnswerSec)

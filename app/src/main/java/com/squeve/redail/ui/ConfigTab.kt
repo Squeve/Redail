@@ -45,6 +45,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -310,14 +311,30 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
         }
 
         GroupHeader("APP", "Look, feel and privacy")
-        CollapsibleCard("appearance", "APPEARANCE", "Theme, size, colours and haptics") {
-            FieldLabel("THEME")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("DARK", "LIGHT", "SYSTEM").forEachIndexed { i, label ->
-                    SegChip(label, cfg.themeMode == i, true, Modifier.weight(1f)) { cfg.themeMode = i }
-                }
+        CollapsibleCard("appearance", "APPEARANCE", "Style, theme, size and haptics") {
+            FieldLabel("STYLE")
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                ThemeTile(null, cfg.themePack == 0) { cfg.themePack = 0 }
+                PACKS.forEachIndexed { i, p -> ThemeTile(p, cfg.themePack == i + 1) { cfg.themePack = i + 1 } }
             }
+            val pk = PACKS.getOrNull(cfg.themePack - 1)
+            Caption(
+                if (pk == null) "Classic uses the dark, light and accent choices below."
+                else "${pk.name} · ${pk.tagline}. This style sets its own colours.",
+            )
             Spacer(Modifier.height(14.dp))
+            if (pk == null) {
+                FieldLabel("THEME")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("DARK", "LIGHT", "SYSTEM").forEachIndexed { i, label ->
+                        SegChip(label, cfg.themeMode == i, true, Modifier.weight(1f)) { cfg.themeMode = i }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
             FieldLabel("SIZE")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("COMPACT", "NORMAL", "LARGE").forEachIndexed { i, label ->
@@ -325,27 +342,28 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
                 }
             }
             Spacer(Modifier.height(14.dp))
-            FieldLabel("ACCENT")
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                ACCENTS.forEachIndexed { i, a ->
-                    val sel = cfg.accentIdx == i
-                    Box(
-                        Modifier
-                            .size(36.dp)
-                            .pressable { cfg.accentIdx = i }
-                            .clip(CircleShape)
-                            .background(Brush.linearGradient(listOf(a.main, a.second)))
-                            .border(if (sel) 3.dp else 1.dp, if (sel) Fg else Hair, CircleShape),
-                    )
+            if (pk == null) {
+                FieldLabel("ACCENT")
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ACCENTS.forEachIndexed { i, a ->
+                        val sel = cfg.accentIdx == i
+                        Box(
+                            Modifier
+                                .size(36.dp)
+                                .pressable { cfg.accentIdx = i }
+                                .clip(CircleShape)
+                                .background(Brush.linearGradient(listOf(a.main, a.second)))
+                                .border(if (sel) 3.dp else 1.dp, if (sel) Fg else Hair, CircleShape),
+                        )
+                    }
                 }
+                Spacer(Modifier.height(8.dp))
+                ToggleRow("Pure black", "Deeper dark background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
             }
-            Spacer(Modifier.height(8.dp))
-            ToggleRow("Pure black", "Deeper dark background, good on OLED screens.", cfg.blackOn, true) { cfg.blackOn = it }
             ToggleRow("Haptic feedback", "Small vibrations when you tap buttons or drag rows.", cfg.hapticsOn, true) {
                 cfg.hapticsOn = it
             }
         }
-
         CollapsibleCard("bubble", "FLOATING BUBBLE", "The on-screen control during calls") {
             FieldLabel("PREMIUM")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
