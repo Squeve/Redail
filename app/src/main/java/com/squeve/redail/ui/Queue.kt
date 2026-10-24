@@ -262,7 +262,7 @@ internal fun QueueList(
         items(shown, key = { keys.getOrElse(it) { "row$it" } }) { i ->
             val n = list[i]
             val completed = p?.completed?.getOrNull(i) ?: 0
-            val callsEach = cfg.callsFor(n)
+            val callsEach = cfg.attemptsFor(n)
             // 0 = queued, 1 = current, 2 = done
             val state = when {
                 finished -> 2

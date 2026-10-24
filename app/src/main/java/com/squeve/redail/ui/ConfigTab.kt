@@ -122,6 +122,7 @@ import com.squeve.redail.data.Checkpoint
 import com.squeve.redail.data.EventLog
 import com.squeve.redail.data.HistoryRecord
 import com.squeve.redail.data.HistoryStore
+import com.squeve.redail.data.learnRingOut
 import com.squeve.redail.data.ListStore
 import com.squeve.redail.data.RunStore
 import com.squeve.redail.data.Scheduled
@@ -151,6 +152,7 @@ import kotlin.math.roundToInt
 @Composable
 internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -178,6 +180,16 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
                     cfg.gapMaxSec = it
                 }
             }
+            Hairline()
+            ToggleRow(
+                "Smart gaps", "Wait a different time after a busy line and after no answer.",
+                cfg.smartGaps, !running,
+            ) { cfg.smartGaps = it }
+            if (cfg.smartGaps) {
+                StepperRow("After busy or declined", cfg.gapBusySec, 1..300, !running, { "${it}s" }) { cfg.gapBusySec = it }
+                StepperRow("After no answer", cfg.gapNoAnswerSec, 1..600, !running, { "${it}s" }) { cfg.gapNoAnswerSec = it }
+                Caption("A busy line often frees up quickly, so a short wait works. Numbers with their own interval keep it.")
+            }
         }
 
         CollapsibleCard("answers", "ANSWERS", "What counts as answered") {
@@ -193,6 +205,20 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
             if (cfg.skipAnswered) {
                 StepperRow("Answers needed", cfg.answersToStop, 1..10, !running, { "$it" }) { cfg.answersToStop = it }
             }
+            Hairline()
+            ToggleRow(
+                "Redial until answered",
+                "Keeps calling each number until someone answers, within the limits below.",
+                cfg.untilAnswered, !running,
+            ) { cfg.untilAnswered = it }
+            if (cfg.untilAnswered) {
+                StepperRow("Most tries per number", cfg.maxTries, 1..500, !running, { "$it" }) { cfg.maxTries = it }
+                StepperRow(
+                    "Give up after", cfg.giveUpMin, 0..720, !running,
+                    { if (it == 0) "no limit" else if (it >= 60) "${it / 60}h ${it % 60}m" else "${it}m" },
+                ) { cfg.giveUpMin = it }
+                Caption("Replaces Calls per number while it is on. A number with its own call count keeps it.")
+            }
         }
 
         CollapsibleCard("audio", "AUDIO", "Speaker and microphone during calls") {
@@ -204,6 +230,44 @@ internal fun ConfigTab(cfg: Config, running: Boolean, simCount: Int) {
             ) { cfg.muteOn = it }
         }
 
+        CollapsibleCard("answerAlert", "ANSWER ALERT", "Notice when someone probably picks up") {
+            ToggleRow(
+                "Alert when a call is probably answered",
+                "Android does not tell apps the moment a call is answered. A call still going after the time below is treated as answered.",
+                cfg.answerAlert, !running,
+            ) { cfg.answerAlert = it }
+            if (cfg.answerAlert) {
+                StepperRow("Still going after", cfg.answerGuessSec, 8..180, !running, { "${it}s" }) { cfg.answerGuessSec = it }
+                Caption("Set it a little longer than your carrier lets an unanswered call ring, or you will get false alerts.")
+                Spacer(Modifier.height(8.dp))
+                FieldLabel("WHEN IT HAPPENS")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("ALERT", "KEEP", "SPEAKER", "EARPIECE").forEachIndexed { i, label ->
+                        SegChip(label, cfg.answerAction == i, !running, Modifier.weight(1f)) { cfg.answerAction = i }
+                    }
+                }
+                Caption(
+                    when (cfg.answerAction) {
+                        0 -> "Sound and vibration only. The hang-up timer keeps running."
+                        1 -> "Also cancels the hang-up timer and opens your microphone, so you can talk."
+                        2 -> "Also keeps the call, opens the mic and switches to speaker."
+                        else -> "Also keeps the call, opens the mic and switches to the earpiece."
+                    },
+                )
+                Spacer(Modifier.height(4.dp))
+                GhostButton("LEARN FROM HISTORY", enabled = !running, modifier = Modifier.fillMaxWidth().height(44.dp)) {
+                    scope.launch {
+                        val learned = withContext(Dispatchers.IO) { learnRingOut(HistoryStore.load(ctx, 5000)) }
+                        if (learned != null) {
+                            cfg.answerGuessSec = learned
+                            Toast.makeText(ctx, "Set to ${learned}s from your call history", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(ctx, "Not enough unanswered calls in the history yet", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
         CollapsibleCard("queue", "QUEUE RULES", "Duplicates and country code") {
             ToggleRow("Allow duplicate numbers", "Off: a number already in the queue is skipped.", cfg.allowDup, true) {
                 cfg.allowDup = it

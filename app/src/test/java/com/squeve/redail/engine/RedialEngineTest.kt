@@ -5,7 +5,11 @@ import com.squeve.redail.model.AttemptResult
 import com.squeve.redail.model.CallOrder
 import com.squeve.redail.model.EngineState
 import com.squeve.redail.model.RedialJob
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -34,6 +38,30 @@ class RedialEngineTest {
         override fun lastOutgoingDurationSec(number: String, sinceMs: Long): Long = 0L
     }
 
+    private class FixedLog(private val seconds: Long) : CallLogReader {
+        override fun lastOutgoingDurationSec(number: String, sinceMs: Long): Long = seconds
+    }
+
+    /** A phone line that goes busy when a call is placed and frees up by itself after a moment. */
+    private class LineDialer(
+        private val scope: CoroutineScope,
+        private val busy: MutableStateFlow<Boolean>,
+        private val endsAfterMs: Long,
+    ) : Dialer {
+        override fun place(number: String, speaker: Boolean): Boolean {
+            busy.value = true
+            scope.launch {
+                delay(endsAfterMs)
+                busy.value = false
+            }
+            return true
+        }
+        override fun hangUp(): Boolean {
+            busy.value = false
+            return true
+        }
+    }
+
     private fun job(number: String, calls: Int) =
         RedialJob(number = number, attempts = calls, gapMs = 1_000, hangUpAfterMs = 5_000)
 
@@ -44,11 +72,15 @@ class RedialEngineTest {
         checkpoints: MutableList<List<Int>> = mutableListOf(),
         gate: () -> Gate = { Gate.Go },
         isHeld: (String) -> Boolean = { false },
+        busy: MutableStateFlow<Boolean> = MutableStateFlow(false),
+        callLog: CallLogReader = NoLog,
+        busyMaxSec: Long = 15,
     ) = RedialEngine(
         dialers = listOf(dialer),
-        phoneBusy = MutableStateFlow(false),
+        phoneBusy = busy,
         phoneRinging = MutableStateFlow(false),
-        callLog = NoLog,
+        callLog = callLog,
+        busyMaxSec = busyMaxSec,
         onResult = { results += it },
         onCheckpoint = { checkpoints += it },
         gate = gate,
@@ -141,6 +173,55 @@ class RedialEngineTest {
         e.start(this, listOf(job("A", 2), job("B", 1)), CallOrder.SEQUENTIAL)
         advanceUntilIdle()
         assertEquals(listOf("B", "A", "A"), results.map { it.number })
+        assertTrue(e.state.value is EngineState.Finished)
+    }
+
+    @Test
+    fun callThatEndsFastWithoutAnswerIsBusy() = runTest {
+        val results = mutableListOf<AttemptResult>()
+        val busy = MutableStateFlow(false)
+        val e = engine(dialer = LineDialer(this, busy, 3_000), dry = false, results = results, busy = busy)
+        e.start(this, listOf(job("A", 1)), CallOrder.SEQUENTIAL)
+        advanceUntilIdle()
+        e.state.first { it is EngineState.Finished }
+        assertEquals(AttemptOutcome.BUSY, results.single().outcome)
+    }
+
+    @Test
+    fun callThatRingsLongWithoutAnswerIsNoAnswer() = runTest {
+        val results = mutableListOf<AttemptResult>()
+        val busy = MutableStateFlow(false)
+        // busyMaxSec -1 means "no call ever counts as a quick end", standing in for a long ring.
+        val e = engine(dialer = LineDialer(this, busy, 3_000), dry = false, results = results, busy = busy, busyMaxSec = -1)
+        e.start(this, listOf(job("A", 1)), CallOrder.SEQUENTIAL)
+        advanceUntilIdle()
+        e.state.first { it is EngineState.Finished }
+        assertEquals(AttemptOutcome.NO_ANSWER, results.single().outcome)
+    }
+
+    @Test
+    fun callLogTimeMeansAnswered() = runTest {
+        val results = mutableListOf<AttemptResult>()
+        val busy = MutableStateFlow(false)
+        val e = engine(
+            dialer = LineDialer(this, busy, 3_000), dry = false, results = results, busy = busy,
+            callLog = FixedLog(42),
+        )
+        e.start(this, listOf(job("A", 1)), CallOrder.SEQUENTIAL)
+        advanceUntilIdle()
+        e.state.first { it is EngineState.Finished }
+        assertEquals(AttemptOutcome.CONNECTED, results.single().outcome)
+        assertEquals(42L, results.single().durationSec)
+    }
+
+    @Test
+    fun numberIsGivenUpOnceItsTimeLimitIsUsed() = runTest {
+        val results = mutableListOf<AttemptResult>()
+        val e = engine(results = results)
+        val j = RedialJob("A", 3, 1_000, hangUpAfterMs = 5_000, giveUpAfterMs = 0)
+        e.start(this, listOf(j), CallOrder.SEQUENTIAL)
+        advanceUntilIdle()
+        assertEquals(1, results.size)
         assertTrue(e.state.value is EngineState.Finished)
     }
 }

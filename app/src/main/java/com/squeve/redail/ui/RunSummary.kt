@@ -220,6 +220,7 @@ internal fun SummaryCard(
     val answered = results.count { it.outcome == AttemptOutcome.CONNECTED }
     val noAnswer = results.count { it.outcome == AttemptOutcome.NO_ANSWER }
     val failed = results.count { it.outcome == AttemptOutcome.FAILED_TO_START }
+    val busy = results.count { it.outcome == AttemptOutcome.BUSY }
     val perNumber = results.groupBy { it.number }
     val unanswered = perNumber.filter { e -> e.value.none { it.outcome == AttemptOutcome.CONNECTED } }.keys.toList()
 
@@ -238,6 +239,7 @@ internal fun SummaryCard(
                 StatTile("FAILED", "$failed", Magenta, Modifier.weight(1f))
             }
         }
+        if (!dry && busy > 0) Caption("$busy of the calls ended fast: busy or declined.")
         Spacer(Modifier.height(12.dp))
         Hairline()
         perNumber.entries.take(30).forEach { (n, list) ->

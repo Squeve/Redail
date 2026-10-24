@@ -162,7 +162,7 @@ internal fun DialTab(
 
         HeroPanel(
             jobCount = cfg.numbers.size,
-            totalCalls = cfg.numbers.sumOf { cfg.callsFor(it) },
+            totalCalls = cfg.numbers.sumOf { cfg.attemptsFor(it) },
             names = cfg.names,
         )
         SummaryHost(cfg, a)
@@ -340,7 +340,7 @@ internal fun DialTab(
             Hairline()
             Spacer(Modifier.height(12.dp))
 
-            val total = cfg.numbers.sumOf { cfg.callsFor(it) }
+            val total = cfg.numbers.sumOf { cfg.attemptsFor(it) }
             val customCount = cfg.numbers.count { cfg.overrides[it] != null }
             if (cfg.numbers.isEmpty()) {
                 Text("Add at least one target to begin.", fontFamily = Mono, fontSize = 12.sp, color = Dim)
@@ -357,7 +357,7 @@ internal fun DialTab(
                     if (allLimited) {
                         val avgGap = if (cfg.gapRandom) (cfg.gapSec + maxOf(cfg.gapMaxSec, cfg.gapSec)) / 2 else cfg.gapSec
                         val secs = cfg.numbers.sumOf { n ->
-                            cfg.callsFor(n).toLong() * ((cfg.hangUpFor(n) ?: 0) + avgGap)
+                            cfg.attemptsFor(n).toLong() * ((cfg.hangUpFor(n) ?: 0) + avgGap)
                         }
                         append(" · up to ~${spanText(secs)}")
                     }

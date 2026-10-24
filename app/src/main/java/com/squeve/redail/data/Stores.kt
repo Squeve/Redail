@@ -31,6 +31,11 @@ object PlanCodec {
                         put("sa", j.stopAfterAnswers)
                         put("sp", j.speaker)
                         put("m", j.muteMic)
+                        put("gb", j.gapBusyMs ?: -1L)
+                        put("gn", j.gapNoAnswerMs ?: -1L)
+                        put("gu", j.giveUpAfterMs ?: -1L)
+                        put("ag", j.answerGuessSec)
+                        put("aa", j.answerAction)
                     },
                 )
             }
@@ -51,6 +56,11 @@ object PlanCodec {
                 stopAfterAnswers = j.optInt("sa", 1),
                 speaker = j.optBoolean("sp", false),
                 muteMic = j.optBoolean("m", false),
+                gapBusyMs = j.optLong("gb", -1L).takeIf { it >= 0 },
+                gapNoAnswerMs = j.optLong("gn", -1L).takeIf { it >= 0 },
+                giveUpAfterMs = j.optLong("gu", -1L).takeIf { it >= 0 },
+                answerGuessSec = j.optInt("ag", 0),
+                answerAction = j.optInt("aa", 0),
             )
         }
         val order = CallOrder.values().getOrElse(o.optInt("order", 0)) { CallOrder.SEQUENTIAL }
@@ -189,6 +199,7 @@ data class HistoryRecord(
     val outcome: String,
     val durationSec: Long,
     val sim: Int,
+    val ringSec: Long = 0,
 )
 
 /** Every real call placed, one JSON object per line, newest at the end of the file. */
@@ -206,6 +217,7 @@ object HistoryStore {
                 put("o", r.outcome.name)
                 put("d", r.durationSec)
                 put("s", r.simSlot)
+                put("r", r.ringSec)
             }.toString()
             f.appendText(line + "\n")
             if (f.length() > 900_000) {
@@ -225,7 +237,7 @@ object HistoryStore {
                     val o = JSONObject(line)
                     HistoryRecord(
                         o.getLong("t"), o.getString("n"), o.optString("m"),
-                        o.getString("o"), o.optLong("d", 0), o.optInt("s", -1),
+                        o.getString("o"), o.optLong("d", 0), o.optInt("s", -1), o.optLong("r", 0),
                     )
                 }.getOrNull()
             }.reversed()
@@ -241,12 +253,13 @@ object HistoryStore {
         val dir = File(ctx.cacheDir, "exports").apply { mkdirs() }
         val out = File(dir, "squeve-history.csv")
         val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
-        val sb = StringBuilder("time,number,name,result,seconds,sim\n")
+        val sb = StringBuilder("time,number,name,result,seconds,sim,ring_seconds\n")
         load(ctx, 100_000).reversed().forEach { r ->
             val name = "\"" + r.name.replace("\"", "\"\"") + "\""
             val sim = if (r.sim >= 0) "SIM ${r.sim + 1}" else ""
             sb.append(fmt.format(Date(r.ts))).append(',').append(r.number).append(',').append(name)
-                .append(',').append(r.outcome).append(',').append(r.durationSec).append(',').append(sim).append('\n')
+                .append(',').append(r.outcome).append(',').append(r.durationSec).append(',').append(sim)
+                .append(',').append(r.ringSec).append('\n')
         }
         out.writeText(sb.toString())
         return out

@@ -34,6 +34,8 @@ class RedialService : Service() {
         const val ACTION_UNMUTE = "com.squeve.redail.UNMUTE"  // open the microphone for this call
         private const val CHANNEL = "redail"
         private const val DONE_CHANNEL = "redail_done"
+        private const val ANSWER_CHANNEL = "redail_answer"
+        private const val ANSWER_ID = 4412
         private const val NOTIF_ID = 1
         private const val DONE_ID = 2
 
@@ -73,6 +75,13 @@ class RedialService : Service() {
         mgr.createNotificationChannel(NotificationChannel(CHANNEL, "Redial", NotificationManager.IMPORTANCE_LOW))
         mgr.createNotificationChannel(
             NotificationChannel(DONE_CHANNEL, "Run finished", NotificationManager.IMPORTANCE_HIGH),
+        )
+        mgr.createNotificationChannel(
+            NotificationChannel(ANSWER_CHANNEL, "Call probably answered", NotificationManager.IMPORTANCE_HIGH).apply {
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 300, 150, 300, 150, 600)
+                description = "Sounds when a call is still going after the time you set, so you can take over."
+            },
         )
     }
 
@@ -136,6 +145,7 @@ class RedialService : Service() {
             onCheckpoint = { done -> if (!isDry) RunStore.saveCheckpoint(app, plan, done) },
             gate = { checkGate(prefs) },
             isHeld = { n -> held.value.contains(n) },
+            onAnswerGuess = { n, act -> answerAlert(n, act) },
             simMode = simMode,
             answeredAfterSec = prefs.getInt("answerSec", 5),
             dryRun = isDry,
@@ -240,6 +250,33 @@ class RedialService : Service() {
             .setSilent(!prefs.getBoolean("alertOn", true))
             .build()
         getSystemService(NotificationManager::class.java).notify(DONE_ID, n)
+    }
+
+    /** Sound and vibration (and a heads-up banner) the moment a call is probably answered. */
+    private fun answerAlert(number: String, act: Int) {
+        val open = PendingIntent.getActivity(
+            this, 1,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_NEW_TASK),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val text = when (act) {
+            0 -> "Still connected. The hang-up timer is still running."
+            1 -> "Still connected. The timer is off and your mic is open."
+            2 -> "Still connected. The timer is off, mic open, on speaker."
+            else -> "Still connected. The timer is off, mic open, on the earpiece."
+        }
+        val n = NotificationCompat.Builder(this, ANSWER_CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_call)
+            .setColor(Color.parseColor("#00E5FF"))
+            .setContentTitle("${label(number)} may have answered")
+            .setContentText(text)
+            .setContentIntent(open)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setAutoCancel(true)
+            .setTimeoutAfter(20_000)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(ANSWER_ID, n)
     }
 
     private fun describe(s: EngineState): String = when (s) {

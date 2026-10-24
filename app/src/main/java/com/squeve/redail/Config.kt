@@ -222,6 +222,15 @@ internal class Config(private val prefs: SharedPreferences) {
     var uiSize by mutableStateOf(prefs.getInt("uiSize", 1))
     var hapticsOn by mutableStateOf(prefs.getBoolean("haptics", true))
     var themeMode by mutableStateOf(prefs.getInt("themeMode", 0))
+    var smartGaps by mutableStateOf(prefs.getBoolean("smartGaps", false))
+    var gapBusySec by mutableStateOf(prefs.getInt("gapBusySec", 5))
+    var gapNoAnswerSec by mutableStateOf(prefs.getInt("gapNoAnswerSec", 20))
+    var untilAnswered by mutableStateOf(prefs.getBoolean("untilAnswered", false))
+    var maxTries by mutableStateOf(prefs.getInt("maxTries", 30))
+    var giveUpMin by mutableStateOf(prefs.getInt("giveUpMin", 0))
+    var answerAlert by mutableStateOf(prefs.getBoolean("answerAlert", false))
+    var answerGuessSec by mutableStateOf(prefs.getInt("answerGuessSec", 30))
+    var answerAction by mutableStateOf(prefs.getInt("answerAction", 0))
 
     /** Not remembered between launches on purpose: a forgotten dry-run switch must never hide a real run. */
     var dryRun by mutableStateOf(false)
@@ -253,6 +262,10 @@ internal class Config(private val prefs: SharedPreferences) {
     }
 
     fun callsFor(n: String): Int = overrides[n]?.calls ?: calls
+
+    /** How many calls a number can get: its own count, or the "redial until answered" cap. */
+    fun attemptsFor(n: String): Int =
+        overrides[n]?.calls ?: if (untilAnswered) maxTries else calls
     fun gapFor(n: String): Int = overrides[n]?.gap ?: gapSec
     fun speakerFor(n: String): Boolean = overrides[n]?.speaker ?: speakerOn
     fun muteFor(n: String): Boolean = overrides[n]?.mute ?: muteOn
@@ -281,14 +294,19 @@ internal class Config(private val prefs: SharedPreferences) {
         val ownGap = overrides[n]?.gap != null
         RedialJob(
             number = n,
-            attempts = callsFor(n),
+            attempts = attemptsFor(n),
             gapMs = gapFor(n) * 1000L,
             gapMaxMs = if (gapRandom && !ownGap) maxOf(gapMaxSec, gapSec) * 1000L else null,
             hangUpAfterMs = hangUpFor(n)?.let { it * 1000L },
-            stopOnConnected = skipAnswered,
-            stopAfterAnswers = answersToStop,
+            stopOnConnected = skipAnswered || untilAnswered,
+            stopAfterAnswers = if (skipAnswered) answersToStop else 1,
             speaker = speakerFor(n),
             muteMic = muteFor(n),
+            gapBusyMs = if (smartGaps && !ownGap) gapBusySec * 1000L else null,
+            gapNoAnswerMs = if (smartGaps && !ownGap) gapNoAnswerSec * 1000L else null,
+            giveUpAfterMs = if (untilAnswered && giveUpMin > 0) giveUpMin * 60_000L else null,
+            answerGuessSec = if (answerAlert) answerGuessSec else 0,
+            answerAction = answerAction,
         )
     }
 
@@ -299,6 +317,8 @@ internal class Config(private val prefs: SharedPreferences) {
         calls, gapSec, gapRandom, gapMaxSec, limitOn, durSec, skipAnswered, answersToStop, answerSec,
         speakerOn, muteOn, simSlot, simMode, order, bubbleLook, alertOn, dailyCap, quietOn, quietStart,
         quietEnd, batteryPause, countryCode, allowDup, lockOn, accentIdx, blackOn, uiSize, hapticsOn, themeMode,
+        smartGaps, gapBusySec, gapNoAnswerSec, untilAnswered, maxTries, giveUpMin, answerAlert, answerGuessSec,
+        answerAction,
     )
 
     fun save() {
@@ -327,6 +347,10 @@ internal class Config(private val prefs: SharedPreferences) {
             .putBoolean("lockOn", lockOn)
             .putInt("accent", accentIdx).putBoolean("black", blackOn).putInt("uiSize", uiSize)
             .putBoolean("haptics", hapticsOn).putInt("themeMode", themeMode)
+            .putBoolean("smartGaps", smartGaps).putInt("gapBusySec", gapBusySec).putInt("gapNoAnswerSec", gapNoAnswerSec)
+            .putBoolean("untilAnswered", untilAnswered).putInt("maxTries", maxTries).putInt("giveUpMin", giveUpMin)
+            .putBoolean("answerAlert", answerAlert).putInt("answerGuessSec", answerGuessSec)
+            .putInt("answerAction", answerAction)
             .apply()
     }
 
@@ -364,6 +388,15 @@ internal class Config(private val prefs: SharedPreferences) {
             put("uiSize", uiSize)
             put("haptics", hapticsOn)
             put("themeMode", themeMode)
+            put("smartGaps", smartGaps)
+            put("gapBusySec", gapBusySec)
+            put("gapNoAnswerSec", gapNoAnswerSec)
+            put("untilAnswered", untilAnswered)
+            put("maxTries", maxTries)
+            put("giveUpMin", giveUpMin)
+            put("answerAlert", answerAlert)
+            put("answerGuessSec", answerGuessSec)
+            put("answerAction", answerAction)
         }
     }
 
@@ -408,5 +441,14 @@ internal class Config(private val prefs: SharedPreferences) {
         uiSize = o.optInt("uiSize", uiSize)
         hapticsOn = o.optBoolean("haptics", hapticsOn)
         themeMode = o.optInt("themeMode", themeMode)
+        smartGaps = o.optBoolean("smartGaps", smartGaps)
+        gapBusySec = o.optInt("gapBusySec", gapBusySec)
+        gapNoAnswerSec = o.optInt("gapNoAnswerSec", gapNoAnswerSec)
+        untilAnswered = o.optBoolean("untilAnswered", untilAnswered)
+        maxTries = o.optInt("maxTries", maxTries)
+        giveUpMin = o.optInt("giveUpMin", giveUpMin)
+        answerAlert = o.optBoolean("answerAlert", answerAlert)
+        answerGuessSec = o.optInt("answerGuessSec", answerGuessSec)
+        answerAction = o.optInt("answerAction", answerAction)
     }
 }

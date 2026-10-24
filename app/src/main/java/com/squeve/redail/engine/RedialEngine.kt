@@ -20,9 +20,11 @@ class RedialEngine(
     private val onCheckpoint: (List<Int>) -> Unit = {},
     private val gate: () -> Gate = { Gate.Go },
     private val isHeld: (String) -> Boolean = { false },   // numbers the user put on hold during the run
+    private val onAnswerGuess: (String, Int) -> Unit = { _, _ -> },   // a call is probably answered
     private val simMode: Int = 0,                // 0 fixed SIM, 1 fall back to the next SIM, 2 alternate every call
     private val answeredAfterSec: Int = 5,       // a call this long (per the call log) counts as answered
     private val dryRun: Boolean = false,         // simulate: no real calls
+    private val busyMaxSec: Long = 15,           // a call that ends by itself this fast, unanswered, was busy or declined
     private val startTimeoutMs: Long = 10_000,   // max wait for a placed call to actually begin
     private val settleTimeoutMs: Long = 8_000,   // max wait for the line to free up after hang up
     private val postCallPauseMs: Long = 800,     // let the telephony stack settle between calls
@@ -162,6 +164,7 @@ class RedialEngine(
             val done = IntArray(queue.size)
             val answered = IntArray(queue.size)
             val skipped = BooleanArray(queue.size)
+            val firstAt = LongArray(queue.size)
 
             fun progressAt(s: Int): Progress {
                 val ji = slots[s]
@@ -208,7 +211,16 @@ class RedialEngine(
                     pending.addFirst(s)
                     continue
                 }
+                val limitMs = job.giveUpAfterMs
+                if (limitMs != null && firstAt[ji] > 0L && System.currentTimeMillis() - firstAt[ji] >= limitMs) {
+                    skipped[ji] = true
+                    done[ji] = job.attempts
+                    onEvent("${job.number}: gave up after ${limitMs / 60_000} min")
+                    onCheckpoint(done.toList())
+                    continue
+                }
                 waitUntilIdle()
+                if (firstAt[ji] == 0L) firstAt[ji] = System.currentTimeMillis()
 
                 val r = dialOnce(job, progressAt(s))
                 results += r
@@ -216,7 +228,11 @@ class RedialEngine(
 
                 done[ji]++
                 if (r.outcome == AttemptOutcome.CONNECTED) answered[ji]++
-                lastGap = pickGap(job)
+                lastGap = when (r.outcome) {
+                    AttemptOutcome.BUSY -> job.gapBusyMs ?: pickGap(job)
+                    AttemptOutcome.NO_ANSWER -> job.gapNoAnswerMs ?: pickGap(job)
+                    else -> pickGap(job)
+                }
                 if (job.stopOnConnected && answered[ji] >= job.stopAfterAnswers) {
                     skipped[ji] = true
                     done[ji] = job.attempts
@@ -271,6 +287,7 @@ class RedialEngine(
         callCounter++
         if (used == null) return failed(job, p, -1)
         val dialer = used
+        val callStartedAt = System.currentTimeMillis()
 
         val limit = job.hangUpAfterMs
         currentLimit = limit
@@ -296,6 +313,24 @@ class RedialEngine(
                 }
             } else null
 
+            // Android never says when a call is answered, so a call still going after this long counts as answered.
+            val guesser = if (job.answerGuessSec > 0) {
+                launch {
+                    delay(job.answerGuessSec * 1000L)
+                    if (inCallNow && phoneBusy.value) {
+                        onEvent("Probably answered · call still going after ${job.answerGuessSec}s")
+                        if (job.answerAction >= 1) {
+                            holdCall()
+                            if (job.answerAction >= 2) {
+                                delay(1_700)   // let the audio keeper finish its last pass first
+                                audio.apply(job.answerAction == 2, false)
+                            }
+                        }
+                        onAnswerGuess(job.number, job.answerAction)
+                    }
+                }
+            } else null
+
             var ended = false
             while (true) {
                 val deadline = hangUpAt.value
@@ -313,8 +348,10 @@ class RedialEngine(
             }
             mirror.cancel()
             keeper?.cancel()
+            guesser?.cancel()
             ended
         }
+        val ringSec = (System.currentTimeMillis() - callStartedAt) / 1000
 
         if (!endedByItself) {
             onEvent("Hanging up (time limit)")
@@ -332,9 +369,19 @@ class RedialEngine(
 
         // The call log is the only hint Android gives about whether anyone picked up.
         val duration = withContext(Dispatchers.IO) { callLog.lastOutgoingDurationSec(job.number, startedAt) }
-        val outcome = if (duration >= answeredAfterSec) AttemptOutcome.CONNECTED else AttemptOutcome.NO_ANSWER
-        onEvent("Ended · ${duration}s · " + if (outcome == AttemptOutcome.CONNECTED) "answered" else "no answer")
-        return AttemptResult(job.number, p.attempt, outcome, duration, simSlot = dialer.slot)
+        val outcome = when {
+            duration >= answeredAfterSec -> AttemptOutcome.CONNECTED
+            endedByItself && ringSec <= busyMaxSec -> AttemptOutcome.BUSY
+            else -> AttemptOutcome.NO_ANSWER
+        }
+        onEvent(
+            "Ended · ${duration}s · " + when (outcome) {
+                AttemptOutcome.CONNECTED -> "answered"
+                AttemptOutcome.BUSY -> "busy or declined"
+                else -> "no answer"
+            },
+        )
+        return AttemptResult(job.number, p.attempt, outcome, duration, simSlot = dialer.slot, ringSec = ringSec)
     }
 
     /** Pretend call: walks the same states and timing logic without touching the phone. */

@@ -150,17 +150,18 @@ import kotlin.math.roundToInt
 // ───────────────────────── LOG tab ─────────────────────────
 @Composable
 internal fun LogTab(cfg: Config) {
-    var mode by rememberSaveable { mutableStateOf(0) }   // 0 live, 1 history
+    var mode by rememberSaveable { mutableStateOf(0) }   // 0 live, 1 history, 2 stats
     Column(Modifier.fillMaxSize().padding(horizontal = 14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             SegChip("LIVE", mode == 0, true, Modifier.weight(1f)) { mode = 0 }
             SegChip("HISTORY", mode == 1, true, Modifier.weight(1f)) { mode = 1 }
+            SegChip("STATS", mode == 2, true, Modifier.weight(1f)) { mode = 2 }
         }
         Spacer(Modifier.height(12.dp))
-        if (mode == 0) {
-            EventFeed(Modifier.weight(1f))
-        } else {
-            HistoryList(cfg, Modifier.weight(1f))
+        when (mode) {
+            0 -> EventFeed(Modifier.weight(1f))
+            1 -> HistoryList(cfg, Modifier.weight(1f))
+            else -> StatsPanel(cfg, Modifier.weight(1f))
         }
         Spacer(Modifier.height(8.dp))
     }
@@ -200,7 +201,7 @@ internal fun HistoryList(cfg: Config, modifier: Modifier) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var reload by remember { mutableStateOf(0) }
-    var filter by remember { mutableStateOf(0) }       // 0 all, 1 answered, 2 no answer, 3 failed
+    var filter by remember { mutableStateOf(0) }       // 0 all, 1 answered, 2 no answer, 3 busy, 4 failed
     var confirmClear by remember { mutableStateOf(false) }
     val records by produceState<List<HistoryRecord>?>(null, reload) {
         value = withContext(Dispatchers.IO) { HistoryStore.load(ctx, 600) }
@@ -208,7 +209,7 @@ internal fun HistoryList(cfg: Config, modifier: Modifier) {
 
     Column(modifier) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("ALL", "ANSWERED", "NO ANS", "FAILED").forEachIndexed { i, label ->
+            listOf("ALL", "ANSWERED", "NO ANS", "BUSY", "FAILED").forEachIndexed { i, label ->
                 SegChip(label, filter == i, true, Modifier.weight(1f)) { filter = i }
             }
         }
@@ -219,7 +220,8 @@ internal fun HistoryList(cfg: Config, modifier: Modifier) {
             when (filter) {
                 1 -> it.outcome == "CONNECTED"
                 2 -> it.outcome == "NO_ANSWER"
-                3 -> it.outcome == "FAILED_TO_START"
+                3 -> it.outcome == "BUSY"
+                4 -> it.outcome == "FAILED_TO_START"
                 else -> true
             }
         }
@@ -266,6 +268,7 @@ internal fun HistoryRow(r: HistoryRecord, name: String?) {
     val (label, color) = when (r.outcome) {
         "CONNECTED" -> "ANSWERED" to Mint
         "NO_ANSWER" -> "NO ANSWER" to Dim
+        "BUSY" -> "BUSY / DECLINED" to Violet
         "FAILED_TO_START" -> "FAILED" to Magenta
         else -> "CALL" to Dim
     }
@@ -281,7 +284,10 @@ internal fun HistoryRow(r: HistoryRecord, name: String?) {
         }
         Column(horizontalAlignment = Alignment.End) {
             Text(label, fontFamily = Mono, fontSize = 11.sp, letterSpacing = 1.sp, color = color)
-            Text("${r.durationSec}s", fontFamily = Mono, fontSize = 11.sp, color = Dim)
+            Text(
+                if (r.outcome == "CONNECTED" || r.ringSec <= 0L) "${r.durationSec}s" else "rang ${r.ringSec}s",
+                fontFamily = Mono, fontSize = 11.sp, color = Dim,
+            )
         }
     }
     Hairline()
