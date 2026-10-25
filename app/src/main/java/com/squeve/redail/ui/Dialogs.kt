@@ -277,7 +277,7 @@ internal fun CheckMark(selected: Boolean, disabled: Boolean) {
             .border(1.5.dp, if (selected) Cyan else if (disabled) Hair else Dim, shape),
         contentAlignment = Alignment.Center,
     ) {
-        if (selected) Glyph(Icons.Filled.Check, Ink, 16.dp)
+        if (selected) Glyph(Icons.Filled.Check, OnAccent, 16.dp)
     }
 }
 

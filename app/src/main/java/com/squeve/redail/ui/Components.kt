@@ -172,13 +172,14 @@ internal fun NeonButton(
     text: String,
     enabled: Boolean = true,
     brush: Brush = NeonBrush,
-    textColor: Color = Ink,
+    textColor: Color = OnAccent,
     strong: Boolean = false,
     modifier: Modifier = Modifier,
     icon: (@Composable (Color) -> Unit)? = null,
     onClick: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(14.dp)
+    val radius = Theming.pack?.btnRadius ?: 14
+    val shape = RoundedCornerShape(radius.dp)
     val ink = if (enabled) textColor else Dim
     Box(
         modifier
@@ -195,7 +196,7 @@ internal fun NeonButton(
                             brush = brush,
                             topLeft = Offset(-g, -g / 2 + 4.dp.toPx()),
                             size = Size(size.width + 2 * g, size.height + g),
-                            cornerRadius = CornerRadius(14.dp.toPx() + g),
+                            cornerRadius = CornerRadius(radius.dp.toPx() + g),
                             alpha = a,
                         )
                     }
@@ -324,16 +325,47 @@ internal fun GroupHeader(title: String, hint: String) {
 
 @Composable
 internal fun GlassCard(content: @Composable ColumnScope.() -> Unit) {
-    Surface(
-        color = Panel,
-        shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(
-            1.dp,
-            Brush.linearGradient(listOf(Cyan.copy(alpha = 0.55f), Violet.copy(alpha = 0.25f), Color.Transparent)),
-        ),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(Modifier.padding(16.dp), content = content)
+    val p = Theming.pack
+    if (p == null) {
+        Surface(
+            color = Panel,
+            shape = RoundedCornerShape(20.dp),
+            border = BorderStroke(
+                1.dp,
+                Brush.linearGradient(listOf(Cyan.copy(alpha = 0.55f), Violet.copy(alpha = 0.25f), Color.Transparent)),
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(16.dp), content = content)
+        }
+    } else {
+        // Glass, soft-drop or raised, depending on the style.
+        val radius = p.cardRadius.dp
+        val shape = RoundedCornerShape(radius)
+        val opaque = p.cardTo.copy(alpha = 1f)
+        var m = Modifier.fillMaxWidth()
+        when (p.cardShadow) {
+            1 -> m = m.softShadow(p.shadowColor, 18.dp, 0.dp, 10.dp, radius, opaque)
+            2 -> m = m
+                .softShadow(p.shadowLight, 14.dp, (-7).dp, (-7).dp, radius, opaque)
+                .softShadow(p.shadowColor, 14.dp, 7.dp, 7.dp, radius, opaque)
+        }
+        val gloss = Color.White.copy(alpha = if (p.light) 0.35f else 0.07f)
+        Box(
+            m
+                .clip(shape)
+                .background(Brush.linearGradient(listOf(p.cardFrom, p.cardTo)))
+                .drawBehind {
+                    drawRect(Brush.verticalGradient(listOf(gloss, Color.Transparent), endY = size.height * 0.45f))
+                }
+                .border(
+                    1.dp,
+                    Brush.linearGradient(listOf(p.cardRim, p.cardRim.copy(alpha = 0.08f), p.cardRim.copy(alpha = 0.30f))),
+                    shape,
+                ),
+        ) {
+            Column(Modifier.padding(16.dp), content = content)
+        }
     }
 }
 

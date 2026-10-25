@@ -227,6 +227,8 @@ internal val Fg: Color get() = Theming.pack?.fg ?: if (Theming.light) Color(0xFF
 internal val Soft: Color get() = Theming.pack?.soft ?: if (Theming.light) Color(0xFF16213A) else Color(0xFFE6EEFF)
 internal val DialogBg: Color get() = Theming.pack?.dialog ?: if (Theming.light) Color.White else Color(0xFF0E1628)
 internal val Lilac: Color get() = Theming.pack?.lilac ?: if (Theming.light) Color(0xFF6A4DE0) else Color(0xFFB39DFF)
+/** Text and icons that sit on an accent-coloured fill. */
+internal val OnAccent: Color get() = Theming.pack?.onAccent ?: Ink
 
 /** The whole UI is drawn at this fraction of normal size (dp and sp together). */
 internal const val UI_SCALE = 0.88f
@@ -265,7 +267,7 @@ internal fun typographyWith(f: FontFamily): Typography {
 internal fun schemeFor() = if (Theming.light) {
     lightColorScheme(
         primary = Cyan,
-        onPrimary = Ink,
+        onPrimary = OnAccent,
         background = Ink,
         onBackground = Soft,
         surface = Panel,
@@ -277,7 +279,7 @@ internal fun schemeFor() = if (Theming.light) {
 } else {
     darkColorScheme(
         primary = Cyan,
-        onPrimary = Ink,
+        onPrimary = OnAccent,
         background = Ink,
         onBackground = Soft,
         surface = Panel,
@@ -288,65 +290,44 @@ internal fun schemeFor() = if (Theming.light) {
     )
 }
 
-/** Gradient, two soft glows and a faint pattern. Drawn once, cheap. */
+/** The screen background: a style's gradient, glows and scenery, or classic's gradient with a faint grid. */
 internal fun Modifier.techBackdrop(): Modifier = this.drawBehind {
-    drawRect(BgBrush)
     val w = size.width
     val h = size.height
     val pack = Theming.pack
-    fun glow(c: Color, center: Offset, radius: Float, alpha: Float) {
-        drawCircle(
-            brush = Brush.radialGradient(listOf(c.copy(alpha = alpha), Color.Transparent), center = center, radius = radius),
-            radius = radius,
-            center = center,
-        )
-    }
-    if (pack == null) {
-        glow(Cyan, Offset(w * 0.5f, 0f), w * 0.95f, 0.12f)
+    if (pack != null) {
+        drawRect(Brush.linearGradient(pack.bg, start = Offset.Zero, end = Offset(w, h)))
+        pack.blobs.forEach { b ->
+            val c = Offset(w * b.x, h * b.y)
+            val r = w * b.r
+            drawCircle(
+                brush = Brush.radialGradient(listOf(b.color.copy(alpha = b.alpha), Color.Transparent), center = c, radius = r),
+                radius = r,
+                center = c,
+            )
+        }
+        drawScenery(pack)
     } else {
-        glow(pack.glowA, Offset(w * 0.2f, 0f), w * 1.0f, if (pack.light) 0.28f else 0.22f)
-        glow(pack.glowB, Offset(w * 0.95f, h * 0.92f), w * 0.9f, if (pack.light) 0.22f else 0.16f)
-    }
-    val line = Cyan.copy(alpha = if (pack == null) 0.035f else if (pack.light) 0.07f else 0.05f)
-    when (pack?.pattern ?: 0) {
-        1 -> {
-            val step = 22.dp.toPx()
-            var y = step / 2
-            while (y < h) {
-                var x = step / 2
-                while (x < w) {
-                    drawCircle(line, radius = 1.3.dp.toPx(), center = Offset(x, y))
-                    x += step
-                }
-                y += step
-            }
+        drawRect(BgBrush)
+        val glowCenter = Offset(w * 0.5f, 0f)
+        drawCircle(
+            brush = Brush.radialGradient(
+                listOf(Cyan.copy(alpha = 0.12f), Color.Transparent), center = glowCenter, radius = w * 0.95f,
+            ),
+            radius = w * 0.95f,
+            center = glowCenter,
+        )
+        val step = 36.dp.toPx()
+        val line = Cyan.copy(alpha = 0.035f)
+        var x = 0f
+        while (x < w) {
+            drawLine(line, Offset(x, 0f), Offset(x, h), 1f)
+            x += step
         }
-        2 -> {
-            val step = 30.dp.toPx()
-            var x = -h
-            while (x < w) {
-                drawLine(line, Offset(x, h), Offset(x + h, 0f), 1f)
-                x += step
-            }
-        }
-        3 -> {
-            val center = Offset(w * 0.92f, h * 0.95f)
-            for (k in 1..7) {
-                drawCircle(line, radius = 90.dp.toPx() * k, center = center, style = Stroke(width = 1f))
-            }
-        }
-        else -> {
-            val step = 36.dp.toPx()
-            var x = 0f
-            while (x < w) {
-                drawLine(line, Offset(x, 0f), Offset(x, h), 1f)
-                x += step
-            }
-            var y = 0f
-            while (y < h) {
-                drawLine(line, Offset(0f, y), Offset(w, y), 1f)
-                y += step
-            }
+        var y = 0f
+        while (y < h) {
+            drawLine(line, Offset(0f, y), Offset(w, y), 1f)
+            y += step
         }
     }
 }

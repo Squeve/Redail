@@ -3,7 +3,7 @@
 Newest first. The top section is published as the release notes and shown in the app (SYSTEM > Updates).
 
 ## 0.15 - Queue and polish
-- Ten theme styles with rich colours: Royal Gold, Emerald Noir, Crimson Velvet, Ocean Abyss, Sunset Blaze, Cyber Violet, Obsidian Silver, Aurora, and the light styles Rose Quartz and Arctic Frost. Each has its own surfaces, text, accents, glows and background pattern. Pick one in CONFIG > Appearance > Style; Classic keeps the dark, light, system and accent choices.
+- Seven rich theme styles, replacing the first set: Dreamscape (violet dusk with peach glow and glass tiles), Cobalt Coral (electric blue fading to coral), Black Amber (black glass with molten amber), Porcelain (soft raised light style), Glass Navy (frosted glass with gold), Rose Noir (black wine with rose gold) and Pearl Aurora (light pastel glass). Each has a gradient background with glows and scenery, its own card finish (glass, drop shadow or raised), button shape and colours. Pick one in CONFIG > Appearance > Style; Classic keeps the dark, light, system and accent choices.
 - Call results are clearer: besides answered / no answer / failed, a call that ends fast without an answer is now labelled busy or declined, and the history shows how long unanswered calls rang.
 - Smart gaps: a different wait after a busy line and after no answer (CONFIG > Timing).
 - Redial until answered, with a most-tries cap and a give-up time (CONFIG > Answers).

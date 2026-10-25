@@ -498,7 +498,7 @@ internal fun ToggleRow(
             },
             enabled = enabled,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Ink,
+                checkedThumbColor = OnAccent,
                 checkedTrackColor = Cyan,
                 checkedBorderColor = Cyan,
                 uncheckedThumbColor = Dim,

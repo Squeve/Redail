@@ -17,7 +17,8 @@ class ThemePacksTest {
     }
 
     @Test
-    fun patternsAreOneOfTheKnownFour() {
-        assertTrue(PACKS.all { it.pattern in 0..3 })
+    fun sceneryIsOneOfTheKnownKinds() {
+        assertTrue(PACKS.all { it.scenery in 0..2 })
+        assertTrue(PACKS.all { it.bg.size >= 2 })
     }
 }

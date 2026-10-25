@@ -147,249 +147,263 @@ import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 
 // ───────────────────────── Theme styles ─────────────────────────
-/** A complete look: surfaces, text, accents and background art. CLASSIC (index 0) is not one of these. */
+/** A soft coloured glow in the background. Position and size are fractions of the screen width and height. */
+internal class Blob(val color: Color, val x: Float, val y: Float, val r: Float, val alpha: Float)
+
+/**
+ * A complete visual style: a rich gradient background with glows and scenery, glass or raised cards,
+ * and its own text, accent and button colours. CLASSIC (index 0) is not one of these.
+ */
 internal class ThemePack(
     val name: String, val tagline: String, val light: Boolean,
+    val bg: List<Color>, val blobs: List<Blob>,
+    /** 0 none, 1 layered mountains, 2 flowing waves. */
+    val scenery: Int,
     val ink: Color, val inkSoft: Color, val panel: Color, val dock: Color, val hair: Color,
     val dim: Color, val fg: Color, val soft: Color, val dialog: Color,
-    val accent: Color, val accent2: Color, val ok: Color, val lilac: Color,
-    val glowA: Color, val glowB: Color,
-    /** 0 grid, 1 dots, 2 diagonal lines, 3 rings. */
-    val pattern: Int,
+    val accent: Color, val accent2: Color, val onAccent: Color, val ok: Color, val lilac: Color,
+    val cardFrom: Color, val cardTo: Color, val cardRim: Color, val cardRadius: Int,
+    /** 0 none (glass), 1 soft drop shadow, 2 raised neumorphic. */
+    val cardShadow: Int, val shadowColor: Color, val shadowLight: Color,
+    val btnRadius: Int,
 )
 
 internal val PACKS = listOf(
     ThemePack(
-        "ROYAL GOLD", "Black and molten gold", false,
-        Color(0xFF0A0804),
-        Color(0xFF14100A),
-        Color(0xD9201808),
-        Color(0xF0100C06),
-        Color(0xFF3D3015),
-        Color(0xFFB9A57A),
-        Color(0xFFFFF4D9),
-        Color(0xFFF3E3BC),
-        Color(0xFF1A1409),
-        Color(0xFFFFD166),
-        Color(0xFFE09F3E),
-        Color(0xFF7BE495),
-        Color(0xFFF2B880),
-        Color(0xFFFFC857),
-        Color(0xFFB5651D),
-        2,
+        name = "DREAMSCAPE", tagline = "Violet dusk, peach glow, glass tiles", light = false,
+        bg = listOf(Color(0xFF1F174F), Color(0xFF3A2278), Color(0xFF5B2F82)),
+        blobs = listOf(
+            Blob(Color(0xFFFFA07A), 0.12f, 0.02f, 0.95f, 0.38f),
+            Blob(Color(0xFF2EE6C5), 0.98f, 0.45f, 0.55f, 0.20f),
+            Blob(Color(0xFFB79CFF), 0.50f, 1.00f, 0.90f, 0.30f),
+        ),
+        scenery = 1,
+        ink = Color(0xFF2A1F66), inkSoft = Color(0xFF3A2A7A), panel = Color(0xCC3A2A78), dock = Color(0xEE2B2070), hair = Color(0x40FFFFFF),
+        dim = Color(0xFFE6DCFA), fg = Color(0xFFFFFFFF), soft = Color(0xFFF3ECFF), dialog = Color(0xFF33277A),
+        accent = Color(0xFFFFB892), accent2 = Color(0xFFD07BFF), onAccent = Color(0xFF2A1450), ok = Color(0xFF62F5C8), lilac = Color(0xFFFFD0E4),
+        cardFrom = Color(0x2EFFFFFF), cardTo = Color(0x14FFFFFF), cardRim = Color(0x66FFFFFF), cardRadius = 26,
+        cardShadow = 0, shadowColor = Color(0x66150A3A), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 20,
     ),
     ThemePack(
-        "EMERALD NOIR", "Deep green with jade light", false,
-        Color(0xFF03100B),
-        Color(0xFF07201A),
-        Color(0xD90B2A21),
-        Color(0xF0061711),
-        Color(0xFF14503C),
-        Color(0xFF86B8A4),
-        Color(0xFFE9FFF5),
-        Color(0xFFCDF5E4),
-        Color(0xFF08201A),
-        Color(0xFF2EF2A0),
-        Color(0xFF12B5CB),
-        Color(0xFF2EF2A0),
-        Color(0xFF8FF0D0),
-        Color(0xFF00D68F),
-        Color(0xFF0A6E78),
-        1,
+        name = "COBALT CORAL", tagline = "Electric blue fading to coral red", light = false,
+        bg = listOf(Color(0xFF071B55), Color(0xFF0F3A9A), Color(0xFF2A63D8), Color(0xFFC22E48)),
+        blobs = listOf(
+            Blob(Color(0xFFBFD8FF), 0.15f, 0.00f, 0.90f, 0.28f),
+            Blob(Color(0xFFFF5A68), 0.95f, 0.95f, 0.80f, 0.35f),
+        ),
+        scenery = 2,
+        ink = Color(0xFF071B55), inkSoft = Color(0xFF0F3A9A), panel = Color(0xD9102F7A), dock = Color(0xF00A2166), hair = Color(0x40FFFFFF),
+        dim = Color(0xFFD6E2FF), fg = Color(0xFFFFFFFF), soft = Color(0xFFE6EEFF), dialog = Color(0xFF0F2C78),
+        accent = Color(0xFFFF4D63), accent2 = Color(0xFF1F7AE8), onAccent = Color(0xFFFFFFFF), ok = Color(0xFF5BF0AE), lilac = Color(0xFFFFB0B8),
+        cardFrom = Color(0xE0102A74), cardTo = Color(0xD0163F9E), cardRim = Color(0x66CFE0FF), cardRadius = 28,
+        cardShadow = 0, shadowColor = Color(0x66050F3A), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 22,
     ),
     ThemePack(
-        "CRIMSON VELVET", "Wine red and ember", false,
-        Color(0xFF12050A),
-        Color(0xFF210A14),
-        Color(0xD9331019),
-        Color(0xF0180710),
-        Color(0xFF5C1A2E),
-        Color(0xFFD09BAA),
-        Color(0xFFFFEAF0),
-        Color(0xFFFAD2DC),
-        Color(0xFF2A0C16),
-        Color(0xFFFF4D6D),
-        Color(0xFFFF9E5E),
-        Color(0xFF6EE7B7),
-        Color(0xFFFFA8B8),
-        Color(0xFFFF2E63),
-        Color(0xFF8A1538),
-        3,
+        name = "BLACK AMBER", tagline = "Black glass with molten amber", light = false,
+        bg = listOf(Color(0xFF050508), Color(0xFF0D0D13), Color(0xFF17120A)),
+        blobs = listOf(
+            Blob(Color(0xFFFFB800), 0.95f, 0.02f, 0.75f, 0.26f),
+            Blob(Color(0xFFFF8A00), 0.02f, 0.98f, 0.70f, 0.16f),
+        ),
+        scenery = 0,
+        ink = Color(0xFF050508), inkSoft = Color(0xFF0D0D13), panel = Color(0xEE15151C), dock = Color(0xF00A0A0F), hair = Color(0xFF2B2A26),
+        dim = Color(0xFFB5A67C), fg = Color(0xFFFFF8E6), soft = Color(0xFFF0E6C8), dialog = Color(0xFF14141A),
+        accent = Color(0xFFFFC21A), accent2 = Color(0xFFFF9500), onAccent = Color(0xFF1A1200), ok = Color(0xFF8FE388), lilac = Color(0xFFFFD27A),
+        cardFrom = Color(0xFF1D1D26), cardTo = Color(0xFF121218), cardRim = Color(0x66FFC21A), cardRadius = 26,
+        cardShadow = 1, shadowColor = Color(0xCC000000), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 24,
     ),
     ThemePack(
-        "OCEAN ABYSS", "Midnight blue, electric aqua", false,
-        Color(0xFF020B1C),
-        Color(0xFF06203D),
-        Color(0xD90A2A4D),
-        Color(0xF0041429),
-        Color(0xFF13497A),
-        Color(0xFF8DB5D9),
-        Color(0xFFE8F6FF),
-        Color(0xFFCDE6FA),
-        Color(0xFF071E38),
-        Color(0xFF3DD9FF),
-        Color(0xFF3D7BFF),
-        Color(0xFF3EE6B0),
-        Color(0xFFA0C4FF),
-        Color(0xFF0AA3E8),
-        Color(0xFF1B4DB3),
-        0,
+        name = "PORCELAIN", tagline = "Soft light, raised graphite buttons", light = true,
+        bg = listOf(Color(0xFFF5F6F8), Color(0xFFECEEF2)),
+        blobs = emptyList(),
+        scenery = 0,
+        ink = Color(0xFFF0F1F4), inkSoft = Color(0xFFE6E8ED), panel = Color(0xF2F6F7F9), dock = Color(0xFFF2F3F6), hair = Color(0xFFD5D8E0),
+        dim = Color(0xFF5C6170), fg = Color(0xFF15161A), soft = Color(0xFF2A2C33), dialog = Color(0xFFF6F7F9),
+        accent = Color(0xFF1B1C20), accent2 = Color(0xFF4A4C56), onAccent = Color(0xFFFFFFFF), ok = Color(0xFF157A42), lilac = Color(0xFF4A4C56),
+        cardFrom = Color(0xFFF7F8FA), cardTo = Color(0xFFEDEFF3), cardRim = Color(0xCCFFFFFF), cardRadius = 28,
+        cardShadow = 2, shadowColor = Color(0x59A3AEC4), shadowLight = Color(0xFFFFFFFF),
+        btnRadius = 26,
     ),
     ThemePack(
-        "SUNSET BLAZE", "Plum sky, orange to pink", false,
-        Color(0xFF130820),
-        Color(0xFF24103A),
-        Color(0xD9381A57),
-        Color(0xF0190B2B),
-        Color(0xFF5D2E86),
-        Color(0xFFD0A8E0),
-        Color(0xFFFFF1E6),
-        Color(0xFFFFDCC7),
-        Color(0xFF2A1244),
-        Color(0xFFFF8A1F),
-        Color(0xFFFF2E93),
-        Color(0xFF7FE9A8),
-        Color(0xFFFFB085),
-        Color(0xFFFF6A00),
-        Color(0xFFC2186B),
-        2,
+        name = "GLASS NAVY", tagline = "Frosted glass over deep blue, gold accent", light = false,
+        bg = listOf(Color(0xFF1B3F78), Color(0xFF132E5C), Color(0xFF0B1B3C)),
+        blobs = listOf(
+            Blob(Color(0xFF7FB2FF), 0.10f, 0.00f, 0.90f, 0.28f),
+            Blob(Color(0xFFF6C453), 0.98f, 0.60f, 0.50f, 0.10f),
+            Blob(Color(0xFF4F8CFF), 0.40f, 1.00f, 0.80f, 0.22f),
+        ),
+        scenery = 2,
+        ink = Color(0xFF0F2348), inkSoft = Color(0xFF18396D), panel = Color(0xCC1B3F78), dock = Color(0xF00F2348), hair = Color(0x40FFFFFF),
+        dim = Color(0xFFD3E0F5), fg = Color(0xFFFFFFFF), soft = Color(0xFFE8F0FF), dialog = Color(0xFF173565),
+        accent = Color(0xFFF6C453), accent2 = Color(0xFFE8A33A), onAccent = Color(0xFF2A1D00), ok = Color(0xFF7CF0B8), lilac = Color(0xFFC9D8FF),
+        cardFrom = Color(0x38FFFFFF), cardTo = Color(0x14FFFFFF), cardRim = Color(0x73FFFFFF), cardRadius = 28,
+        cardShadow = 0, shadowColor = Color(0x66061530), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 22,
     ),
     ThemePack(
-        "CYBER VIOLET", "Neon violet and cyan", false,
-        Color(0xFF0A0516),
-        Color(0xFF150B2E),
-        Color(0xD91F1145),
-        Color(0xF0100824),
-        Color(0xFF3F2488),
-        Color(0xFFB9A6E8),
-        Color(0xFFF3EBFF),
-        Color(0xFFDDD0F8),
-        Color(0xFF1A0E3A),
-        Color(0xFFB65CFF),
-        Color(0xFF00E5FF),
-        Color(0xFF39F5B5),
-        Color(0xFFD2A8FF),
-        Color(0xFF9B3DFF),
-        Color(0xFF0AB7D6),
-        0,
+        name = "ROSE NOIR", tagline = "Black wine, rose gold and garnet", light = false,
+        bg = listOf(Color(0xFF0C0408), Color(0xFF1D0A15), Color(0xFF2C1020)),
+        blobs = listOf(
+            Blob(Color(0xFFF0B3A0), 0.90f, 0.05f, 0.80f, 0.26f),
+            Blob(Color(0xFFC0184F), 0.05f, 0.95f, 0.80f, 0.30f),
+        ),
+        scenery = 0,
+        ink = Color(0xFF0C0408), inkSoft = Color(0xFF1D0A15), panel = Color(0xE6241020), dock = Color(0xF0120610), hair = Color(0x40F0B8A8),
+        dim = Color(0xFFD2A8A0), fg = Color(0xFFFFF0EC), soft = Color(0xFFF7DAD2), dialog = Color(0xFF1E0B16),
+        accent = Color(0xFFF4B8A4), accent2 = Color(0xFFD9877B), onAccent = Color(0xFF2B0F0C), ok = Color(0xFF8CE8B8), lilac = Color(0xFFFFC9BA),
+        cardFrom = Color(0xB3341526), cardTo = Color(0x99200C17), cardRim = Color(0x66F0B8A8), cardRadius = 24,
+        cardShadow = 0, shadowColor = Color(0x66000000), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 22,
     ),
     ThemePack(
-        "OBSIDIAN SILVER", "Black glass, platinum", false,
-        Color(0xFF08080A),
-        Color(0xFF121215),
-        Color(0xD91C1C21),
-        Color(0xF00D0D10),
-        Color(0xFF35353C),
-        Color(0xFF9A9AA5),
-        Color(0xFFFFFFFF),
-        Color(0xFFE6E6EB),
-        Color(0xFF16161A),
-        Color(0xFFF2F4F8),
-        Color(0xFF8F98A8),
-        Color(0xFF8CE99A),
-        Color(0xFFC9CED8),
-        Color(0xFFC8CCD6),
-        Color(0xFF4A4F5C),
-        3,
-    ),
-    ThemePack(
-        "AURORA", "Northern lights green and violet", false,
-        Color(0xFF050B14),
-        Color(0xFF0A1A24),
-        Color(0xD90E2A33),
-        Color(0xF0061018),
-        Color(0xFF1B5A5E),
-        Color(0xFF8FC1B8),
-        Color(0xFFEAFFF8),
-        Color(0xFFD2F7EC),
-        Color(0xFF0B2229),
-        Color(0xFF5CFFC8),
-        Color(0xFFB07CFF),
-        Color(0xFF5CFFC8),
-        Color(0xFFC9B0FF),
-        Color(0xFF3DFFB5),
-        Color(0xFF8A4DFF),
-        1,
-    ),
-    ThemePack(
-        "ROSE QUARTZ", "Light, blush pink and plum", true,
-        Color(0xFFFFF4F7),
-        Color(0xFFFFE6EE),
-        Color(0xE6FFFFFF),
-        Color(0xF5FFFFFF),
-        Color(0xFFF1C4D5),
-        Color(0xFF8F6A7C),
-        Color(0xFF2B1020),
-        Color(0xFF4A2036),
-        Color(0xFFFFFFFF),
-        Color(0xFFD6336C),
-        Color(0xFF7048E8),
-        Color(0xFF23874F),
-        Color(0xFF8B4DD8),
-        Color(0xFFFF8FB5),
-        Color(0xFFB197FC),
-        1,
-    ),
-    ThemePack(
-        "ARCTIC FROST", "Light, ice blue and teal", true,
-        Color(0xFFF1F8FF),
-        Color(0xFFE0EEFB),
-        Color(0xE6FFFFFF),
-        Color(0xF5FFFFFF),
-        Color(0xFFC4DAF0),
-        Color(0xFF57708C),
-        Color(0xFF0A1E33),
-        Color(0xFF1B3550),
-        Color(0xFFFFFFFF),
-        Color(0xFF0B7285),
-        Color(0xFF1864AB),
-        Color(0xFF2B8A3E),
-        Color(0xFF5F3DC4),
-        Color(0xFF74C0FC),
-        Color(0xFF66D9E8),
-        0,
+        name = "PEARL AURORA", tagline = "Light pastel glass, lilac and peach", light = true,
+        bg = listOf(Color(0xFFF4EEFF), Color(0xFFE6F1FF), Color(0xFFFFEFE8)),
+        blobs = listOf(
+            Blob(Color(0xFFC4A8FF), 0.10f, 0.05f, 0.80f, 0.40f),
+            Blob(Color(0xFFFFB79A), 0.95f, 0.90f, 0.80f, 0.38f),
+            Blob(Color(0xFF9ADBFF), 0.90f, 0.25f, 0.50f, 0.25f),
+        ),
+        scenery = 1,
+        ink = Color(0xFFF4EEFF), inkSoft = Color(0xFFE6F1FF), panel = Color(0xE6FFFFFF), dock = Color(0xF2FFFFFF), hair = Color(0xFFD9D2F0),
+        dim = Color(0xFF6B6490), fg = Color(0xFF241B4A), soft = Color(0xFF3A3166), dialog = Color(0xFFFFFFFF),
+        accent = Color(0xFF6B47F0), accent2 = Color(0xFFB84FE6), onAccent = Color(0xFFFFFFFF), ok = Color(0xFF14805A), lilac = Color(0xFF7B4FD8),
+        cardFrom = Color(0xD9FFFFFF), cardTo = Color(0xA6FFFFFF), cardRim = Color(0xFFFFFFFF), cardRadius = 26,
+        cardShadow = 1, shadowColor = Color(0x4D7B5CFF), shadowLight = Color(0x00FFFFFF),
+        btnRadius = 24,
     ),
 )
 
-/** A small preview card for the style picker. Reads the pack's own colours, not the live theme. */
+/** A soft blurred shadow under a rounded shape. [fill] must be opaque so the shadow shows. */
+internal fun Modifier.softShadow(
+    color: Color, blur: Dp, dx: Dp, dy: Dp, radius: Dp, fill: Color,
+): Modifier = this.drawBehind {
+    drawIntoCanvas { canvas ->
+        val paint = android.graphics.Paint().apply {
+            isAntiAlias = true
+            this.color = fill.toArgb()
+            setShadowLayer(blur.toPx(), dx.toPx(), dy.toPx(), color.toArgb())
+        }
+        canvas.nativeCanvas.drawRoundRect(0f, 0f, size.width, size.height, radius.toPx(), radius.toPx(), paint)
+    }
+}
+
+/** Layered mountains or waves along the bottom of the screen, tinted from the style's own colours. */
+internal fun DrawScope.drawScenery(p: ThemePack) {
+    val w = size.width
+    val h = size.height
+    val far = p.accent2
+    val mid = p.accent
+    val near = if (p.light) Color.White else p.ink
+    when (p.scenery) {
+        1 -> {
+            val layers = listOf(
+                Triple(far.copy(alpha = 0.16f), 0.80f, listOf(0f to 0.80f, 0.18f to 0.68f, 0.34f to 0.78f, 0.52f to 0.62f, 0.70f to 0.77f, 0.86f to 0.66f, 1f to 0.76f)),
+                Triple(mid.copy(alpha = 0.14f), 0.86f, listOf(0f to 0.84f, 0.22f to 0.76f, 0.40f to 0.86f, 0.58f to 0.74f, 0.78f to 0.85f, 1f to 0.78f)),
+                Triple(near.copy(alpha = if (p.light) 0.55f else 0.40f), 0.92f, listOf(0f to 0.92f, 0.25f to 0.86f, 0.50f to 0.94f, 0.75f to 0.87f, 1f to 0.93f)),
+            )
+            layers.forEach { (c, _, pts) ->
+                val path = Path().apply {
+                    moveTo(0f, h)
+                    pts.forEach { (fx, fy) -> lineTo(w * fx, h * fy) }
+                    lineTo(w, h)
+                    close()
+                }
+                drawPath(path, c)
+            }
+        }
+        2 -> {
+            val waves = listOf(
+                Triple(far.copy(alpha = 0.14f), 0.86f, 1.3f),
+                Triple(mid.copy(alpha = 0.12f), 0.90f, 1.8f),
+                Triple(near.copy(alpha = if (p.light) 0.5f else 0.30f), 0.95f, 2.4f),
+            )
+            waves.forEachIndexed { k, (c, base, freq) ->
+                val path = Path().apply {
+                    moveTo(0f, h)
+                    val steps = 28
+                    for (i in 0..steps) {
+                        val fx = i / steps.toFloat()
+                        val y = h * base + Math.sin(fx * 2.0 * Math.PI * freq + k * 1.7).toFloat() * h * 0.014f
+                        lineTo(w * fx, y)
+                    }
+                    lineTo(w, h)
+                    close()
+                }
+                drawPath(path, c)
+            }
+        }
+    }
+}
+
+/** A preview card for the style picker. Reads the style's own colours, not the live theme. */
 @Composable
 internal fun ThemeTile(pack: ThemePack?, selected: Boolean, onClick: () -> Unit) {
-    val ink = pack?.ink ?: Color(0xFF070B14)
-    val soft = pack?.inkSoft ?: Color(0xFF0D1424)
-    val panel = pack?.panel ?: Color(0xCC111A2C)
+    val bg = pack?.bg ?: listOf(Color(0xFF070B14), Color(0xFF0D1424))
     val hair = pack?.hair ?: Color(0xFF22304A)
     val a1 = pack?.accent ?: ACCENTS[0].main
     val a2 = pack?.accent2 ?: ACCENTS[0].second
-    val glow = pack?.glowA ?: ACCENTS[0].main
     val fg = pack?.fg ?: Color.White
     val dim = pack?.dim ?: Color(0xFF8A9BB8)
-    val shape = RoundedCornerShape(16.dp)
+    val cardFrom = pack?.cardFrom ?: Color(0xCC111A2C)
+    val cardTo = pack?.cardTo ?: Color(0xCC111A2C)
+    val rim = pack?.cardRim ?: Color(0x5500E5FF)
+    val shape = RoundedCornerShape(18.dp)
     Box(
         Modifier
-            .width(96.dp)
-            .height(128.dp)
+            .width(108.dp)
+            .height(150.dp)
             .pressable(onClick = onClick)
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(ink, soft)))
             .drawBehind {
-                val c = Offset(size.width * 0.2f, 0f)
-                drawCircle(
-                    brush = Brush.radialGradient(listOf(glow.copy(alpha = 0.40f), Color.Transparent), center = c, radius = size.width),
-                    radius = size.width,
-                    center = c,
-                )
+                drawRect(Brush.linearGradient(bg, start = Offset.Zero, end = Offset(size.width, size.height)))
+                if (pack != null) {
+                    pack.blobs.forEach { b ->
+                        val c = Offset(size.width * b.x, size.height * b.y)
+                        val r = size.width * b.r
+                        drawCircle(
+                            brush = Brush.radialGradient(listOf(b.color.copy(alpha = b.alpha), Color.Transparent), center = c, radius = r),
+                            radius = r, center = c,
+                        )
+                    }
+                    drawScenery(pack)
+                } else {
+                    val c = Offset(size.width * 0.5f, 0f)
+                    drawCircle(
+                        brush = Brush.radialGradient(listOf(a1.copy(alpha = 0.25f), Color.Transparent), center = c, radius = size.width),
+                        radius = size.width, center = c,
+                    )
+                }
             }
             .border(if (selected) 2.5.dp else 1.dp, if (selected) a1 else hair, shape),
     ) {
         Column(Modifier.fillMaxSize().padding(10.dp), verticalArrangement = Arrangement.SpaceBetween) {
             Column {
-                Box(Modifier.fillMaxWidth().height(34.dp).clip(RoundedCornerShape(8.dp)).background(panel).border(1.dp, hair, RoundedCornerShape(8.dp)))
-                Spacer(Modifier.height(6.dp))
-                Box(Modifier.fillMaxWidth().height(10.dp).clip(RoundedCornerShape(5.dp)).background(Brush.horizontalGradient(listOf(a1, a2))))
-                Spacer(Modifier.height(5.dp))
-                Box(Modifier.fillMaxWidth(0.6f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(dim.copy(alpha = 0.5f)))
+                val cardShape = RoundedCornerShape(10.dp)
+                Box(
+                    Modifier.fillMaxWidth().height(44.dp).clip(cardShape)
+                        .background(Brush.linearGradient(listOf(cardFrom, cardTo)))
+                        .border(1.dp, rim, cardShape),
+                ) {
+                    Column(Modifier.padding(7.dp)) {
+                        Box(Modifier.fillMaxWidth(0.55f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(fg.copy(alpha = 0.85f)))
+                        Spacer(Modifier.height(4.dp))
+                        Box(Modifier.fillMaxWidth(0.8f).height(5.dp).clip(RoundedCornerShape(3.dp)).background(dim.copy(alpha = 0.6f)))
+                    }
+                }
+                Spacer(Modifier.height(7.dp))
+                Box(
+                    Modifier.fillMaxWidth().height(14.dp).clip(RoundedCornerShape(50))
+                        .background(Brush.horizontalGradient(listOf(a1, a2))),
+                )
             }
             Text(pack?.name ?: "CLASSIC", fontFamily = Mono, fontSize = 9.sp, letterSpacing = 1.sp, color = fg, maxLines = 1)
         }

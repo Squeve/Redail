@@ -489,7 +489,7 @@ internal fun QueueItem(
                             .border(2.dp, if (selected) Cyan else Dim, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (selected) Glyph(Icons.Filled.Check, Ink, 14.dp)
+                        if (selected) Glyph(Icons.Filled.Check, OnAccent, 14.dp)
                     }
                 } else if (done) {
                     Glyph(Icons.Filled.Check, Mint, 16.dp)
